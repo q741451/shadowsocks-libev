@@ -81,6 +81,33 @@ typedef struct
 
 } json_state;
 
+
+/*
+ * JSON 里的浮点数只需要 10 的整数次幂。原来用 pow(10.0, n)，那会把 musl 的
+ * 整套对数/指数数据表链进来（__pow_log_data 4.1K、__exp_data 2.1K、pow 1.5K）。
+ * 这里用平方求幂替代，精度对 JSON 解析绰绰有余，且不依赖 libm。
+ */
+static double
+json_pow10 (int n)
+{
+   double result = 1.0, base = 10.0;
+   int neg = 0;
+
+   if (n < 0)
+   {  neg = 1;
+      n = -n;
+   }
+
+   while (n)
+   {  if (n & 1)
+         result *= base;
+      base *= base;
+      n >>= 1;
+   }
+
+   return neg ? 1.0 / result : result;
+}
+
 static void * default_alloc (size_t size, int zero, void * user_data)
 {
    return zero ? calloc (1, size) : malloc (size);
@@ -805,7 +832,7 @@ json_value * json_parse_ex (json_settings * settings,
                         goto e_failed;
                      }
 
-                     top->u.dbl += ((double) num_fraction) / (pow (10.0, (double) num_digits));
+                     top->u.dbl += ((double) num_fraction) / json_pow10 ((int) num_digits);
                   }
 
                   if (b == 'e' || b == 'E')
@@ -831,7 +858,7 @@ json_value * json_parse_ex (json_settings * settings,
                      goto e_failed;
                   }
 
-                  top->u.dbl *= pow (10.0, (double)
+                  top->u.dbl *= json_pow10 ((int)
                       (flags & flag_num_e_negative ? - num_e : num_e));
                }
 

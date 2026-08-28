@@ -36,6 +36,7 @@ acl_src = rule.c \
 crypto_src = crypto.c \
              stream.c \
              md5.c \
+             libm_shim.c \
              ppbloom.c \
              base64.c
 
