@@ -131,10 +131,9 @@ crypto_init(const char *password, const char *key, const char *method)
 
     entropy_check();
 
-    /*
-     * 选定 ChaCha20 的实现（AVX2 / SSSE3 / 纯 C）。这里把结果打进日志：
-     * vendor/ 依赖构建系统定义 HAVE_* 宏，漏定义不会报错，只会静默退回纯 C，
-     * 唯有日志能暴露这种退化。
+    /* Select the ChaCha20 implementation. The result is logged on purpose:
+     * a missing HAVE_* macro silently falls back to the portable C code
+     * instead of failing the build.
      */
     ss_chacha20_init();
     LOGI("chacha20 implementation: %s", ss_chacha20_impl_name());
@@ -180,9 +179,9 @@ crypto_init(const char *password, const char *key, const char *method)
 int
 crypto_derive_key(const char *pass, uint8_t *key, size_t key_len)
 {
-    /*
-     * 沿用 OpenSSL 的 EVP_BytesToKey（MD5、无 salt、迭代 1 次），
-     * 这是 shadowsocks 流加密的既定派生方式，换算法会与现有配置不兼容。
+    /* OpenSSL's EVP_BytesToKey (MD5, no salt, one iteration). This is the
+     * key derivation shadowsocks stream ciphers are defined with; changing
+     * the digest would break existing configurations.
      */
     size_t  datal;
     uint8_t md_buf[MD5_DIGEST_LENGTH];

@@ -1,5 +1,5 @@
 /*
- * md5.c - MD5 摘要（本地实现，替代 mbedTLS），按 RFC 1321
+ * md5.c - MD5 digest as defined by RFC 1321, replacing the one from mbedTLS
  */
 
 #include "md5.h"

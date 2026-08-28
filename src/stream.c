@@ -30,18 +30,20 @@
 #include "vendor/sodium_shim.h"
 #include "vendor/sodium/crypto_stream_chacha20.h"
 
-/* ChaCha20 一个块 64 字节；分块加密时要按块边界对齐计数器 */
+/* ChaCha20 block size; the counter must stay aligned across calls */
 #define SODIUM_BLOCK_SIZE   64
 
 /*
  * Spec: http://shadowsocks.org/en/spec/Stream-Ciphers.html
  *
- * 流加密只提供机密性，不保证完整性与真实性。本分支有意只保留 chacha20 一种，
- * 定位是「外层已有另一层加密」的场景；若无外层保护，应使用上游的 AEAD 算法。
+ * Stream ciphers provide only confidentiality. Data integrity and authenticity
+ * is not guaranteed. This branch deliberately keeps chacha20 alone, for setups
+ * where an outer layer already provides authentication; without one, use the
+ * AEAD ciphers from upstream instead.
  *
- * 原版还支持 table/rc4/aes-*-cfb/aes-*-ctr/bf/camellia/cast5/des/idea/rc2/
- * seed/salsa20/chacha20-ietf，它们依赖 mbedTLS 与 libsodium 的其余部分。
- * 这里全部移除，加密库依赖也随之去掉，详见 vendor/README.md。
+ * The other methods (table, rc4, aes-*, bf, camellia, cast5, des, idea, rc2,
+ * seed, salsa20, chacha20-ietf) needed mbedTLS and the rest of libsodium and
+ * were removed along with those dependencies. See vendor/README.md.
  */
 
 #define CHACHA20 0
@@ -69,9 +71,8 @@ cipher_key_size(const cipher_t *cipher)
     return cipher->info->key_bitlen / 8;
 }
 
-/*
- * chacha20 直接按 (key, nonce, 块计数器) 生成 keystream，没有需要保存的上下文，
- * 因此下面两个函数只是保留接口形状，实际无事可做。
+/* chacha20 derives the keystream from (key, nonce, block counter) alone, so
+ * there is no cipher context to set up or tear down here.
  */
 void
 stream_ctx_release(cipher_ctx_t *cipher_ctx)
@@ -151,9 +152,8 @@ stream_encrypt(buffer_t *plaintext, cipher_ctx_t *cipher_ctx, size_t capacity)
 #endif
     }
 
-    /*
-     * 流是连续的，但每次调用只处理一段。keystream 必须接着上次的位置走，
-     * 所以按 64 字节块对齐：不足一块的部分在前面补零一起加密，再把补的丢掉。
+    /* The keystream must continue where the previous call left off. Pad the
+     * head up to a block boundary, encrypt, then drop the padding.
      */
     int padding = cipher_ctx->counter % SODIUM_BLOCK_SIZE;
     brealloc(ciphertext, nonce_len + (padding + ciphertext->len) * 2, capacity);

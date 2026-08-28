@@ -55,20 +55,13 @@
 #include "winsock.h"
 
 /*
- * UDP 会话缓存的容量上限。
+ * Sessions are keyed by the client source address and port, so a single DNS
+ * lookup takes a slot and a BitTorrent DHT peer takes thousands. Slots are
+ * held until the session times out, so the steady state is roughly the new
+ * session rate times the timeout, which the previous 256 was well below.
  *
- * 会话键是客户端的「源地址:端口」，所以一次 DNS 查询就占一个槽位，一个网页
- * 会触发十几次；BT 的 DHT 更是同时和上千个节点通信。而会话要挂到 timeout
- * （默认 300 秒）才回收，稳态会话数约等于「新建速率 × timeout」。
- *
- * 原值 256（服务端 512）在实际环境里远远不够：一台家用路由器实测常态就有
- * 170 个活跃会话，已用掉三分之二。缓存一旦打满，每来一个新会话就要淘汰一个
- * 旧的，而淘汰的是哈希表里迭代到的第一个、与活跃度无关，正在传数据的
- * QUIC/BT 会话随时可能被一次 DNS 查询顶掉，表现为无规律的卡顿和丢包。
- *
- * 调大几乎没有代价：cache_create() 只记录这个阈值，哈希表按需增长，不预分配；
- * 每会话约 550 字节加一个 fd，8192 个会话也就 4.5MB，而 OpenWrt 的 fd 上限
- * 通常已是 65535。
+ * Raising it costs almost nothing: cache_create() only records the limit and
+ * the hash table grows on demand.
  */
 #define MAX_UDP_CONN_NUM 8192
 
@@ -87,35 +80,22 @@
 #endif
 
 /*
- * 一次事件回调最多连续处理多少个包。
- *
- * 原先每次回调只收一个包就返回事件循环，于是每个 UDP 包都要多付一次
- * epoll_wait。UDP 的成本是按包算的，省掉这一次调用在高负载下是实打实的收益。
- *
- * 实测（测试机 Celeron 1037U，ss-server 中继 64 字节包，每包 CPU）：
- *     3000 pps   49.3 -> 49.3 us   无变化
- *    10000 pps   37.0 -> 33.8 us   -8.6%
- *    20000 pps   33.7 -> 31.5 us   -6.5%
- * 低速率下没有收益是正常的：套接字里本来就只有一个包，读一个即 EAGAIN，
- * 那次 epoll_wait 省不掉；只有包排队时才摊得开。
- *
- * 上限的作用是防止 UDP 洪水把事件循环占死，饿着 TCP 侧的 watcher。
+ * Packets handled per event callback. Reading one packet per callback costs an
+ * extra epoll_wait for every packet, which matters because UDP is billed per
+ * packet. The cap keeps a UDP flood from starving the other watchers.
  */
 #define MAX_UDP_BATCH 32
 
 /*
- * 一次 recvmmsg 收上来的一批包。
+ * A batch of packets from one recvmmsg call.
  *
- * 实测（测试机 Celeron 1037U，与 ss 同构的中继：2 收 2 发）每包 20.8 微秒
- * 全花在系统调用与协议栈上，而 ChaCha20 只占 0.7 微秒。把收包合并成一次
- * 系统调用是这条路径上唯一有实测支撑的优化方向。
+ * Sends cannot be batched the same way: the forward path uses the per-session
+ * remote_ctx->fd and the REDIR return path creates a socket per packet, so
+ * neither satisfies the single-descriptor requirement of sendmmsg.
  *
- * 发包无法一并批量：去程 sendto 用的是每会话独立的 remote_ctx->fd，
- * REDIR 的回程更是每包新建 src_fd，都不满足 sendmmsg「同一个 fd」的前提。
- *
- * 收发两个方向各用一份，彼此不复用：事件回调不会嵌套，共用一份也安全，
- * 但分开可以免掉一整类难查的隐患。缓冲区按 buf_size 惰性分配一次后复用，
- * 不在每包路径上分配。
+ * One batch per direction. Callbacks never nest, so sharing would be safe too,
+ * but keeping them apart rules out a whole class of aliasing bugs. The buffer
+ * is allocated once and reused, never per packet.
  */
 typedef struct {
     struct mmsghdr          msgs[MAX_UDP_BATCH];
@@ -123,7 +103,7 @@ typedef struct {
     struct sockaddr_storage addrs[MAX_UDP_BATCH];
     char                    ctrl[MAX_UDP_BATCH][64];
     char                   *data;      /* MAX_UDP_BATCH * slot_size */
-    size_t                  slot_size; /* data 分配时的 buf_size */
+    size_t                  slot_size; /* buf_size when data was allocated */
 } udp_batch_t;
 
 static udp_batch_t server_batch;
@@ -251,19 +231,18 @@ get_dstaddr(struct msghdr *msg, struct sockaddr_storage *dstaddr)
 
 #define HASH_KEY_LEN sizeof(struct sockaddr_storage) + sizeof(int)
 /*
- * 收一批包，返回包数；0 表示套接字已空，-1 表示出错。
- * MinGW 没有 recvmmsg，退化为收一个包填进第 0 槽，处理逻辑保持单一。
+ * Receive a batch. Returns the packet count, 0 when the socket is drained and
+ * -1 on error. MinGW has no recvmmsg, so it falls back to a single packet in
+ * slot 0 and the processing path stays the same.
  */
 static int
 udp_batch_recv(int fd, udp_batch_t *b)
 {
     int i, n;
 
-    /*
-     * buf_size 由 init_udprelay() 依 MTU 设定，而它可能被调用多次
-     * （ss-server 逐端口初始化、ss-local 有两条初始化路径）。若缓冲区按旧的
-     * 较小 buf_size 分配、之后 buf_size 变大，下面的 iov_len 就会越界写。
-     * 因此记住分配时的尺寸，不一致就重新分配。
+    /* buf_size comes from init_udprelay(), which can run more than once with
+     * a different MTU. Reusing a buffer allocated for a smaller buf_size would
+     * let iov_len overrun it, so track the size and reallocate on a change.
      */
     if (b->data == NULL || b->slot_size != (size_t)buf_size) {
         ss_free(b->data);
@@ -286,7 +265,7 @@ udp_batch_recv(int fd, udp_batch_t *b)
 #ifndef __MINGW32__
     n = recvmmsg(fd, b->msgs, MAX_UDP_BATCH, 0, NULL);
 #else
-    /* MinGW 既没有 recvmmsg 也没有 recvmsg，退化为收一个包填进第 0 槽 */
+    /* MinGW has neither recvmmsg nor recvmsg */
     {
         socklen_t al = sizeof(b->addrs[0]);
         ssize_t   r  = recvfrom(fd, b->iov[0].iov_base, b->iov[0].iov_len, 0,
@@ -843,11 +822,11 @@ resolv_cb(struct sockaddr *addr, void *data)
 #endif
 
 /*
- * 处理批量中的第 idx 个包。返回 0 表示可继续处理下一个，-1 表示应停止。
+ * Handle packet idx of the batch. Returns 0 to continue with the next one,
+ * -1 to stop.
  *
- * 注意：下面「服务端已关闭」那条路径会 close_and_free_remote(remote_ctx)，
- * 而 remote_ctx 就是 w 本身，释放后再循环即为 use-after-free，
- * 所以那里必须返回 -1 终止循环。
+ * The "server has been closed" path below frees remote_ctx, which is w itself,
+ * so it must return -1 or the caller would loop over freed memory.
  */
 static int
 remote_recv_one(EV_P_ ev_io *w, udp_batch_t *b, int idx)
@@ -859,7 +838,7 @@ remote_recv_one(EV_P_ ev_io *w, udp_batch_t *b, int idx)
     if (server_ctx == NULL) {
         LOGE("[udp] invalid server");
         close_and_free_remote(EV_A_ remote_ctx);
-        return -1;      /* w 已被释放，必须停止 */
+        return -1;      /* w has been freed, must stop */
     }
 
     if (verbose) {
@@ -873,7 +852,7 @@ remote_recv_one(EV_P_ ev_io *w, udp_batch_t *b, int idx)
     buffer_t *buf = ss_malloc(sizeof(buffer_t));
     balloc(buf, buf_size);
 
-    /* 包体已由 udp_batch_recv() 一次性收上来，这里只从槽位取用 */
+    /* Already received by udp_batch_recv(), just take it out of the slot */
     buf->len = b->msgs[idx].msg_len;
     memcpy(buf->data, b->data + (size_t)idx * b->slot_size, buf->len);
     memcpy(&src_addr, &b->addrs[idx], sizeof(src_addr));
@@ -1051,8 +1030,9 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 }
 
 /*
- * 处理批量中的第 idx 个包。返回 0 表示可以继续处理下一个，-1 表示应停止。
- * 这里的 w 是 server_ctx，本函数不会释放它，因此外层循环是安全的。
+ * Handle packet idx of the batch. Returns 0 to continue with the next one,
+ * -1 to stop. Here w is the server_ctx, which this function never frees, so
+ * the caller's loop is safe.
  */
 static int
 server_recv_one(EV_P_ ev_io *w, udp_batch_t *b, int idx)
@@ -1066,7 +1046,7 @@ server_recv_one(EV_P_ ev_io *w, udp_batch_t *b, int idx)
 
     unsigned int offset = 0;
 
-    /* 包体已由 udp_batch_recv() 一次性收上来，这里只从槽位取用 */
+    /* Already received by udp_batch_recv(), just take it out of the slot */
     buf->len = b->msgs[idx].msg_len;
     memcpy(buf->data, b->data + (size_t)idx * b->slot_size, buf->len);
     memcpy(&src_addr, &b->addrs[idx], sizeof(src_addr));
@@ -1082,7 +1062,9 @@ server_recv_one(EV_P_ ev_io *w, udp_batch_t *b, int idx)
     struct sockaddr_storage dst_addr;
     memset(&dst_addr, 0, sizeof(struct sockaddr_storage));
 
-    /* TPROXY 的原始目的地址在控制消息里，recvmmsg 已按槽位分别填好 */
+    /* The original destination arrives as a control message, filled in per
+     * slot by recvmmsg
+     */
     if (get_dstaddr(&b->msgs[idx].msg_hdr, &dst_addr)) {
         LOGE("[udp] unable to get dest addr");
         goto CLEAN_UP;

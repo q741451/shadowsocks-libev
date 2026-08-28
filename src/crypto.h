@@ -36,12 +36,9 @@
 #include <inttypes.h>
 #endif
 
-/*
- * 本分支不依赖 libsodium 与 mbedTLS：ChaCha20 取自 libsodium 并内联在
- * vendor/ 下，MD5 为本地实现，详见 vendor/README.md。
- *
- * 原来的 cipher_kt_t 是 mbedtls_cipher_info_t，这里只需要密钥长度和 nonce
- * 长度两项，用自己的小结构体承载即可。
+/* This branch depends on neither libsodium nor mbedTLS. ChaCha20 is vendored
+ * from libsodium under vendor/, MD5 is implemented locally. cipher_kt_t used
+ * to be mbedtls_cipher_info_t; only the key and nonce lengths are needed here.
  */
 typedef struct {
     unsigned int key_bitlen;

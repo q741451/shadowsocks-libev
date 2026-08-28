@@ -17,29 +17,29 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # 所有架构统一使用 abcfy2/muslcc-toolchain-ubuntu 这个 Docker Hub 镜像，
-          # 它把 musl.cc 的完整工具链目录原样打包分发，tag 就是工具链三元组名。
-          # 这样既避免了直连 musl.cc 下载不稳定的问题，也能拿到全架构的 musl 静态编译
-          # （包括 dockcross 官方镜像不提供的 x86_64-musl 和 mips 软浮点）。
+          # Every architecture uses the abcfy2/muslcc-toolchain-ubuntu image,
+          # which repackages the musl.cc toolchains one tag per triplet. It
+          # avoids downloading from musl.cc directly and covers targets the
+          # dockcross images do not, such as x86_64-musl and soft-float mips.
           - name: x86_64
             tag: x86_64-linux-musl
 
           - name: aarch64
             tag: aarch64-linux-musl
 
-          # armv7 硬浮点，主流现代 ARM 路由器/设备
+          # armv7 hard-float, current ARM routers and devices
           - name: armv7-hf
             tag: arm-linux-musleabihf
 
-          # armv5 软浮点，老旧/低端 ARM 路由器
+          # armv5 soft-float, older or low-end ARM routers
           - name: armv5-sf
             tag: arm-linux-musleabi
 
-          # mips 大端软浮点，常见无 FPU 路由器 SoC
+          # mips big-endian soft-float, FPU-less router SoCs
           - name: mips-sf
             tag: mips-linux-muslsf
 
-          # mipsel 小端软浮点，MTK/Ralink 等常见路由器 SoC
+          # mipsel little-endian soft-float, MTK and Ralink SoCs
           - name: mipsel-sf
             tag: mipsel-linux-muslsf
 
@@ -55,7 +55,7 @@ jobs:
       - name: Build
         run: |
           set -e
-          # 镜像只带裸交叉编译器，构建环境要自己装
+          # The image ships the cross compiler only
           docker run --rm \
             -v "${{ github.workspace }}":/work \
             -w /work \
@@ -73,7 +73,7 @@ jobs:
       - name: Package
         run: |
           set -e
-          # 一个平台的多个可执行文件打成一个压缩包
+          # One archive per platform, holding all its executables
           OUT=shadowsocks-libev-${{ matrix.name }}
           mkdir -p "release/$OUT"
           cp dist/${{ matrix.tag }}/* "release/$OUT/"

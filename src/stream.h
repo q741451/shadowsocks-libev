@@ -36,7 +36,7 @@
 #include <inttypes.h>
 #endif
 
-/* 本分支只保留 chacha20 一种流加密，详见 vendor/README.md */
+/* Only chacha20 is kept in this branch, see vendor/README.md */
 #define STREAM_CIPHER_NUM          1
 
 #include "crypto.h"

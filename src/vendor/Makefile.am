@@ -1,23 +1,23 @@
-# 从 libsodium 抠出的 ChaCha20，单独建一个 convenience library。
+# ChaCha20 vendored from libsodium, built as a convenience library.
 #
-# 之所以放在独立子目录而不是并入 src/Makefile.am：vendor 的源码里有
-# #include "utils.h"，而 src/ 下也有同名头文件，automake 的 DEFAULT_INCLUDES
-# 会让 src/utils.h 抢先匹配，导致 SODIUM_C99 等宏取不到。放到子目录后
-# $(srcdir) 即本目录，不会撞名。
+# It lives in its own subdirectory rather than in src/Makefile.am because the
+# vendored sources include "utils.h" and src/ has a file by that name; with
+# automake's DEFAULT_INCLUDES the wrong one would win and macros such as
+# SODIUM_C99 would go undefined. Here $(srcdir) is this directory.
 #
-# 另外这些是外来代码，不套用本项目的 -Werror。
+# Being third-party code, it is not held to this project's -Werror.
 
-# ChaCha20 是全项目唯一逐字节执行的代码，单独提高优化等级。
-# 等级取自 build-aux/optflags.sh，不在这里写死。
+# ChaCha20 is the only code on the per-byte path, so it gets its own
+# optimisation level, taken from build-aux/optflags.sh.
 #
-# 必须追加在 @CFLAGS@ 之后：automake 的编译行是 $(AM_CFLAGS) $(CFLAGS)，
-# gcc 取最后一个 -O，写进 AM_CFLAGS 会被全局等级盖掉。
+# It has to come after @CFLAGS@: automake compiles with $(AM_CFLAGS) $(CFLAGS)
+# and gcc honours the last -O, so AM_CFLAGS would be overridden.
 CFLAGS = @CFLAGS@ @SS_OPT_CRYPTO@
 
 AM_CFLAGS = -g -Wall -fno-strict-aliasing -std=gnu99 -D_GNU_SOURCE
 AM_CFLAGS += -Wno-error -Wno-unused-function
-# libsodium 的 private/common.h 在未定义 CONFIGURED 时会发三条 #warning，
-# 提示"正在以未记录的方式编译"。这里的用法正是如此且已充分验证，故消掉噪音。
+# Without CONFIGURED, libsodium's private/common.h warns about being built in
+# an undocumented way, which is exactly what this is.
 AM_CFLAGS += -DCONFIGURED=1
 AM_CFLAGS += $(CHACHA20_SIMD_CFLAGS)
 AM_CFLAGS += -I$(srcdir) -I$(srcdir)/sodium
@@ -31,8 +31,9 @@ libsschacha20_la_SOURCES = sodium_shim.c \
 
 libsschacha20_la_LIBADD =
 
-# SSSE3 / AVX2 实现各需自己的 -m 开关，automake 只能按库粒度设编译参数，
-# 因此再拆两个小库。非 x86 平台不参与构建，运行时自动用纯 C 实现。
+# The SSSE3 and AVX2 implementations each need their own -m flag and automake
+# only sets flags per library, hence two more of them. Not built off x86, where
+# the portable C code is used.
 if ARCH_X86
 noinst_LTLIBRARIES += libchacha20_ssse3.la libchacha20_avx2.la
 libchacha20_ssse3_la_SOURCES = chacha20/dolbeau/chacha20_dolbeau-ssse3.c

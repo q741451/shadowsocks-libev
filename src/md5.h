@@ -1,9 +1,9 @@
 /*
- * md5.h - MD5 摘要（本地实现，替代 mbedTLS）
+ * md5.h - MD5 digest, replacing the one from mbedTLS
  *
- * shadowsocks 的密钥派生沿用 OpenSSL 的 EVP_BytesToKey，其中固定使用 MD5，
- * 换成别的摘要就与既有配置不兼容，因此这里必须保留 MD5。
- * 它只用于密钥派生，不用于任何完整性校验。
+ * shadowsocks derives keys with OpenSSL's EVP_BytesToKey, which is defined in
+ * terms of MD5; another digest would break existing configurations. Used for
+ * key derivation only, never for integrity checking.
  */
 
 #ifndef _SS_MD5_H
@@ -16,7 +16,7 @@
 
 typedef struct {
     uint32_t state[4];
-    uint64_t count;          /* 已处理的字节数 */
+    uint64_t count;          /* bytes processed so far */
     uint8_t  buffer[64];
 } ss_md5_ctx;
 

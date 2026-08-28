@@ -31,8 +31,8 @@ endif
 acl_src = rule.c \
           acl.c
 
-# ChaCha20 取自 libsodium 并内联在 vendor/ 下，MD5 为本地实现，
-# 因此不再依赖 libsodium 与 mbedTLS，详见 vendor/README.md
+# ChaCha20 is vendored from libsodium under vendor/ and MD5 is implemented
+# locally, so neither libsodium nor mbedTLS is linked. See vendor/README.md.
 crypto_src = crypto.c \
              stream.c \
              md5.c \

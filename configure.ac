@@ -75,8 +75,8 @@ case $host in
     ;;
 esac
 
-dnl 优化等级策略集中在 build-aux/optflags.sh，scripts/build-static.sh 也 source
-dnl 同一个文件，避免两处各写一套而漂移。
+dnl Optimisation levels live in build-aux/optflags.sh, which
+dnl scripts/build-static.sh sources as well so the two cannot drift apart.
 . "$srcdir/build-aux/optflags.sh"
 AC_SUBST([SS_OPT_CRYPTO])
 AC_SUBST([SS_OPT_HOT])
@@ -85,21 +85,22 @@ AC_SUBST([SS_OPT_COLD])
 dnl Checks for TLS
 AX_TLS([:], [:])
 
-dnl 本分支不依赖 libsodium 与 mbedTLS：ChaCha20 取自 libsodium 并内联在
-dnl src/vendor 下，MD5 为本地实现，详见 src/vendor/README.md
+dnl Neither libsodium nor mbedTLS is needed: ChaCha20 is vendored under
+dnl src/vendor and MD5 is implemented locally. See src/vendor/README.md.
 ss_CARES
 
-dnl ChaCha20 在 x86 上有 SSSE3 / AVX2 实现，由 src/vendor/runtime.c 在运行时
-dnl 按 CPU 特性选择。这些文件靠 HAVE_* 宏开关功能，漏定义不会报错、只会静默
-dnl 退回纯 C 实现，所以启动日志会打印实际选中的实现。
-dnl HAVE__XGETBV 是 MSVC 风格内建，GCC 上须改用 HAVE_AVX_ASM。
+dnl ChaCha20 ships SSSE3 and AVX2 implementations picked at run time by
+dnl src/vendor/runtime.c. They are gated on HAVE_* macros; a missing one is
+dnl not an error, it silently selects the portable C code, which is why the
+dnl startup log reports the implementation in use.
+dnl HAVE__XGETBV is an MSVC builtin, GCC needs HAVE_AVX_ASM instead.
 AC_MSG_CHECKING(whether target CPU has SIMD paths for ChaCha20)
 case $host_cpu in
   i[[3456]]86|x86_64|amd64)
     arch_x86=yes
-    dnl 必须用 -D 直接传给编译器：vendor 的源码来自 libsodium，不 include
-    dnl config.h，走 AC_DEFINE 的话这些宏根本到不了它们那里，表现为静默退回
-    dnl 纯 C 实现（编译链接都不报错）。
+    dnl Passed with -D rather than AC_DEFINE: the vendored sources come from
+    dnl libsodium and do not include config.h, so definitions made there would
+    dnl never reach them.
     CHACHA20_SIMD_CFLAGS="-DHAVE_CPUID -DHAVE_AVX_ASM"
     CHACHA20_SIMD_CFLAGS="$CHACHA20_SIMD_CFLAGS -DHAVE_EMMINTRIN_H -DHAVE_PMMINTRIN_H"
     CHACHA20_SIMD_CFLAGS="$CHACHA20_SIMD_CFLAGS -DHAVE_TMMINTRIN_H -DHAVE_SMMINTRIN_H"

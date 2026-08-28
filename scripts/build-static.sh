@@ -1,15 +1,15 @@
 #!/bin/bash
-# 静态交叉编译 shadowsocks-libev。产物是完全静态的可执行文件，不依赖任何 libc。
+# Cross-compile shadowsocks-libev into fully static executables.
 #
 #   scripts/build-static.sh x86_64-linux-musl
 #   scripts/build-static.sh mipsel-linux-muslsf
 #
-# 不再需要 libsodium 与 mbedTLS：ChaCha20 取自 libsodium 并内联在 src/vendor 下，
-# MD5 为本地实现，详见 src/vendor/README.md。
-# 其余依赖全部钉死版本并校验 sha256。
+# libsodium and mbedTLS are not needed: ChaCha20 is vendored under src/vendor
+# and MD5 is implemented locally. See src/vendor/README.md.
+# The remaining dependencies are pinned by version and checked by sha256.
 set -euo pipefail
 
-HOST=${1:?用法: $0 <musl 三元组>，例如 x86_64-linux-musl}
+HOST=${1:?usage: $0 <musl triplet>, e.g. x86_64-linux-musl}
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 DL=$ROOT/build/dl
@@ -22,8 +22,10 @@ PCRE=8.45;         PCRE_SHA=4e6ce03e0336e8b4a3d6c2b70b1c5e18590a5673a98186da90d4
 CARES=1.18.1;      CARES_SHA=1a7d52a8a84a9fbffb1be9133c0f6e17217d91ea5a6fa61f6b4729cda78ebbcf
 
 export CC=$HOST-gcc AR=$HOST-ar RANLIB=$HOST-ranlib STRIP=$HOST-strip
-# musl.cc 的工具链默认 PIE，不给 -no-pie 的话 -static 出来的仍是动态对象
-# 优化等级策略见 build-aux/optflags.sh，configure.ac 也 source 同一个文件
+# The musl.cc toolchains default to PIE; without -no-pie, -static still
+# produces a dynamic object.
+# Optimisation levels come from build-aux/optflags.sh, which configure.ac
+# sources as well.
 . "$ROOT/build-aux/optflags.sh"
 CFLAGS_HOT="$SS_OPT_HOT $SS_CFLAGS_COMMON"
 CFLAGS_COLD="$SS_OPT_COLD $SS_CFLAGS_COMMON"
@@ -32,24 +34,24 @@ export LDFLAGS="-no-pie"
 
 mkdir -p "$DL" "$DEPS" "$OBJ" "$DIST"
 
-# 主源 + 备用源；下载后一律校验 sha256
+# Primary and fallback mirrors; every download is checked by sha256
 fetch() {
     local file=$1 sha=$2; shift 2
     if [ -f "$DL/$file" ] && echo "$sha  $DL/$file" | sha256sum -c --status; then return; fi
     for url in "$@"; do
-        echo "  下载 $url"
+        echo "  fetching $url"
         curl -fsSL --retry 3 --max-time 900 -o "$DL/$file.tmp" "$url" || continue
         if echo "$sha  $DL/$file.tmp" | sha256sum -c --status; then
             mv "$DL/$file.tmp" "$DL/$file"; return
         fi
-        echo "  !! 校验和不符，换下一个源"; rm -f "$DL/$file.tmp"
+        echo "  !! checksum mismatch, trying next mirror"; rm -f "$DL/$file.tmp"
     done
-    echo "!! $file 下载或校验失败"; exit 1
+    echo "!! could not fetch or verify $file"; exit 1
 }
 
 unpack() { [ -d "$OBJ/$2" ] || tar xf "$DL/$1" -C "$OBJ"; }
 
-# 走 autotools 的依赖统一处理
+# Dependencies that use autotools
 build_ac() {
     local tarball=$1 dir=$2; shift 2
     echo "===== $dir ====="
@@ -85,14 +87,15 @@ mkdir -p "$OBJ/ss" && cd "$OBJ/ss"
     --disable-shared --enable-static --disable-documentation \
     --with-pcre="$DEPS" --with-ev="$DEPS" --with-cares="$DEPS" \
     CFLAGS="$CFLAGS -I$DEPS/include" >/dev/null
-# -all-static 是 libtool 的参数、编译器不认，放进 configure 会让它的编译器测试失败，
-# 只能在 make 时传；且必须一并带上 -L$DEPS/lib，否则会盖掉 configure 记下的库路径
+# -all-static is a libtool flag, not a compiler one: putting it in configure's
+# LDFLAGS makes its compiler test fail, so it is passed at make time. -L must
+# be repeated there or it overrides the library path configure recorded.
 SSLD="-no-pie -all-static -Wl,--gc-sections -L$DEPS/lib"
 make -j"$(nproc)" LDFLAGS="$SSLD" >/dev/null
 make install LDFLAGS="$SSLD" >/dev/null
 cd "$ROOT"
 
-echo "===== 产物 ====="
+echo "===== output ====="
 OUTDIR=$DIST/$HOST
 rm -rf "$OUTDIR"; mkdir -p "$OUTDIR"
 for b in ss-local ss-redir ss-tunnel ss-server ss-manager; do
@@ -105,10 +108,10 @@ for f in "$OUTDIR"/*; do
     printf "  %-11s %8s  %s\n" "$(basename "$f")" "$(stat -c%s "$f")" "$(file -b "$f" | cut -c1-60)"
 done
 
-# 静态性自检：动态链接的产物在目标机上会因缺少 libc 直接跑不起来
+# A dynamically linked result would not start on the target at all
 for b in ss-local ss-redir ss-tunnel ss-server ss-manager; do
     if file -b "$OUTDIR/$b" | grep -q "dynamically linked"; then
-        echo "!! $b 不是静态链接"; exit 1
+        echo "!! $b is not statically linked"; exit 1
     fi
 done
-echo "  静态性自检通过"
+echo "  all binaries are statically linked"

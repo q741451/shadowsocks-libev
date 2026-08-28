@@ -82,10 +82,9 @@ typedef struct
 } json_state;
 
 
-/*
- * JSON 里的浮点数只需要 10 的整数次幂。原来用 pow(10.0, n)，那会把 musl 的
- * 整套对数/指数数据表链进来（__pow_log_data 4.1K、__exp_data 2.1K、pow 1.5K）。
- * 这里用平方求幂替代，精度对 JSON 解析绰绰有余，且不依赖 libm。
+/* JSON numbers only need integer powers of ten. pow() would drag the whole
+ * libm log/exp lookup tables into a static build; exponentiation by squaring
+ * is accurate enough here and needs no libm.
  */
 static double
 json_pow10 (int n)

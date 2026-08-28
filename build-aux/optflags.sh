@@ -1,30 +1,29 @@
-# 优化等级策略 —— 单一事实来源
+# Optimisation levels, the single place they are defined.
 #
-# configure.ac 与 scripts/build-static.sh 都 source 本文件，改这里即可全局生效，
-# 不要把 -O 等级散落到各个 Makefile.am 或构建脚本里。
+# Both configure.ac and scripts/build-static.sh source this file, so a change
+# here applies everywhere; do not spread -O levels across Makefile.am files.
 #
-# 分档依据是组件在数据通路上的位置，不是"重要程度"：
+# Components are graded by where they sit on the data path:
 #
-#   CRYPTO  每字节都要过。实测 ChaCha20 在 -Os / -O2 下代码体积相同，
-#           但 -O2 快约 9%（2889 -> 3139 MB/s）；-O3 再快 3%（-> 3242），
-#           代价 2.7K，值得。
-#   HOT     每个事件或每个数据包过一次：ss 自身的收发转发、libev 事件循环。
-#   COLD    每条连接至多过一次：pcre 的 ACL 规则匹配、c-ares 的域名解析。
-#           这里降到 -Os 省下的体积不换任何吞吐。
+#   CRYPTO  runs per byte. -O2 is the same code size as -Os but noticeably
+#           faster, and -O3 buys a little more for a few kilobytes.
+#   HOT     runs once per event or packet: the relay itself and libev.
+#   COLD    runs at most once per connection: pcre for ACL matching and
+#           c-ares for name resolution. Size traded for nothing there.
 #
-# 注：libcork / libipset / libbloom 是 submodule 且自身没有 AM_CFLAGS，
-# 只能跟随全局 CFLAGS（即 HOT），合计约 18.6K，不值得为其改动子模块。
+# libcork, libipset and libbloom are submodules without their own AM_CFLAGS,
+# so they follow the global CFLAGS (HOT); not worth patching them for size.
 
 SS_OPT_CRYPTO="-O3"
 SS_OPT_HOT="-O2"
 SS_OPT_COLD="-Os"
 
-# 与优化等级无关、所有组件共用的开关。
+# Flags shared by every component, unrelated to the optimisation level.
 #
-# -ffunction-sections/-fdata-sections 必须编译期就加，否则链接时的
-# --gc-sections 在库内部使不上劲。
+# -ffunction-sections and -fdata-sections must be set at compile time or the
+# linker's --gc-sections has nothing to work with inside a library.
 #
-# -fno-asynchronous-unwind-tables 去掉 .eh_frame（实测 12.4K，占 ss-redir 的
-# 5.8%）。那是异常展开表，纯 C 程序用不到，全项目 grep backtrace/_Unwind/
-# execinfo 零命中。代价仅是崩溃时拿不到完整调用栈，而发布产物本就已 strip。
+# -fno-asynchronous-unwind-tables drops .eh_frame. Nothing here unwinds the
+# stack, so it only costs a backtrace on a crash, which a stripped release
+# binary cannot produce anyway.
 SS_CFLAGS_COMMON="-fno-pie -ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables"
