@@ -54,11 +54,23 @@
 #include "udprelay.h"
 #include "winsock.h"
 
-#ifdef MODULE_REMOTE
-#define MAX_UDP_CONN_NUM 512
-#else
-#define MAX_UDP_CONN_NUM 256
-#endif
+/*
+ * UDP 会话缓存的容量上限。
+ *
+ * 会话键是客户端的「源地址:端口」，所以一次 DNS 查询就占一个槽位，一个网页
+ * 会触发十几次；BT 的 DHT 更是同时和上千个节点通信。而会话要挂到 timeout
+ * （默认 300 秒）才回收，稳态会话数约等于「新建速率 × timeout」。
+ *
+ * 原值 256（服务端 512）在实际环境里远远不够：一台家用路由器实测常态就有
+ * 170 个活跃会话，已用掉三分之二。缓存一旦打满，每来一个新会话就要淘汰一个
+ * 旧的，而淘汰的是哈希表里迭代到的第一个、与活跃度无关，正在传数据的
+ * QUIC/BT 会话随时可能被一次 DNS 查询顶掉，表现为无规律的卡顿和丢包。
+ *
+ * 调大几乎没有代价：cache_create() 只记录这个阈值，哈希表按需增长，不预分配；
+ * 每会话约 550 字节加一个 fd，8192 个会话也就 4.5MB，而 OpenWrt 的 fd 上限
+ * 通常已是 65535。
+ */
+#define MAX_UDP_CONN_NUM 8192
 
 #ifdef MODULE_REMOTE
 #ifdef MODULE_
