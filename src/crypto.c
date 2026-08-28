@@ -32,16 +32,14 @@
 #endif
 
 #include <stdint.h>
-#include <sodium.h>
-#include <mbedtls/version.h>
-#include <mbedtls/md5.h>
 
 #include "base64.h"
 #include "crypto.h"
+#include "md5.h"
 #include "stream.h"
-#include "aead.h"
 #include "utils.h"
 #include "ppbloom.h"
+#include "vendor/sodium_shim.h"
 
 int
 balloc(buffer_t *ptr, size_t capacity)
@@ -91,7 +89,7 @@ bprepend(buffer_t *dst, buffer_t *src, size_t capacity)
 int
 rand_bytes(void *output, int len)
 {
-    randombytes_buf(output, len);
+    randombytes_buf(output, (size_t)len);
     // always return success
     return 0;
 }
@@ -99,16 +97,11 @@ rand_bytes(void *output, int len)
 unsigned char *
 crypto_md5(const unsigned char *d, size_t n, unsigned char *md)
 {
-    static unsigned char m[16];
+    static unsigned char m[MD5_DIGEST_LENGTH];
     if (md == NULL) {
         md = m;
     }
-#if MBEDTLS_VERSION_NUMBER >= 0x02070000
-    if (mbedtls_md5_ret(d, n, md) != 0)
-        FATAL("Failed to calculate MD5");
-#else
-    mbedtls_md5(d, n, md);
-#endif
+    ss_md5(d, n, md);
     return md;
 }
 
@@ -137,10 +130,14 @@ crypto_init(const char *password, const char *key, const char *method)
     int i, m = -1;
 
     entropy_check();
-    // Initialize sodium for random generator
-    if (sodium_init() == -1) {
-        FATAL("Failed to initialize sodium");
-    }
+
+    /*
+     * 选定 ChaCha20 的实现（AVX2 / SSSE3 / 纯 C）。这里把结果打进日志：
+     * vendor/ 依赖构建系统定义 HAVE_* 宏，漏定义不会报错，只会静默退回纯 C，
+     * 唯有日志能暴露这种退化。
+     */
+    ss_chacha20_init();
+    LOGI("chacha20 implementation: %s", ss_chacha20_impl_name());
 
     // Initialize NONCE bloom filter
 #ifdef MODULE_REMOTE
@@ -174,28 +171,6 @@ crypto_init(const char *password, const char *key, const char *method)
             return crypto;
         }
 
-        for (i = 0; i < AEAD_CIPHER_NUM; i++)
-            if (strcmp(method, supported_aead_ciphers[i]) == 0) {
-                m = i;
-                break;
-            }
-        if (m != -1) {
-            cipher_t *cipher = aead_init(password, key, method);
-            if (cipher == NULL)
-                return NULL;
-            crypto_t *crypto = (crypto_t *)ss_malloc(sizeof(crypto_t));
-            crypto_t tmp     = {
-                .cipher      = cipher,
-                .encrypt_all = &aead_encrypt_all,
-                .decrypt_all = &aead_decrypt_all,
-                .encrypt     = &aead_encrypt,
-                .decrypt     = &aead_decrypt,
-                .ctx_init    = &aead_ctx_init,
-                .ctx_release = &aead_ctx_release,
-            };
-            memcpy(crypto, &tmp, sizeof(crypto_t));
-            return crypto;
-        }
     }
 
     LOGE("invalid cipher name: %s", method);
@@ -205,151 +180,36 @@ crypto_init(const char *password, const char *key, const char *method)
 int
 crypto_derive_key(const char *pass, uint8_t *key, size_t key_len)
 {
-    size_t datal;
-    datal = strlen((const char *)pass);
-
-    const digest_type_t *md = mbedtls_md_info_from_string("MD5");
-    if (md == NULL) {
-        FATAL("MD5 Digest not found in crypto library");
-    }
-
-    mbedtls_md_context_t c;
-    unsigned char md_buf[MAX_MD_SIZE];
-    int addmd;
-    unsigned int i, j, mds;
-
-    mds = mbedtls_md_get_size(md);
-    memset(&c, 0, sizeof(mbedtls_md_context_t));
+    /*
+     * 沿用 OpenSSL 的 EVP_BytesToKey（MD5、无 salt、迭代 1 次），
+     * 这是 shadowsocks 流加密的既定派生方式，换算法会与现有配置不兼容。
+     */
+    size_t  datal;
+    uint8_t md_buf[MD5_DIGEST_LENGTH];
+    ss_md5_ctx c;
+    int      addmd;
+    unsigned int i, j;
 
     if (pass == NULL)
         return key_len;
-    if (mbedtls_md_setup(&c, md, 0))
-        return 0;
+
+    datal = strlen((const char *)pass);
 
     for (j = 0, addmd = 0; j < key_len; addmd++) {
-        mbedtls_md_starts(&c);
-        if (addmd) {
-            mbedtls_md_update(&c, md_buf, mds);
-        }
-        mbedtls_md_update(&c, (uint8_t *)pass, datal);
-        mbedtls_md_finish(&c, &(md_buf[0]));
+        ss_md5_init(&c);
+        if (addmd)
+            ss_md5_update(&c, md_buf, MD5_DIGEST_LENGTH);
+        ss_md5_update(&c, (const uint8_t *)pass, datal);
+        ss_md5_final(&c, md_buf);
 
-        for (i = 0; i < mds; i++, j++) {
+        for (i = 0; i < MD5_DIGEST_LENGTH; i++, j++) {
             if (j >= key_len)
                 break;
             key[j] = md_buf[i];
         }
     }
 
-    mbedtls_md_free(&c);
     return key_len;
-}
-
-/* HKDF-Extract + HKDF-Expand */
-int
-crypto_hkdf(const mbedtls_md_info_t *md, const unsigned char *salt,
-            int salt_len, const unsigned char *ikm, int ikm_len,
-            const unsigned char *info, int info_len, unsigned char *okm,
-            int okm_len)
-{
-    unsigned char prk[MBEDTLS_MD_MAX_SIZE];
-
-    return crypto_hkdf_extract(md, salt, salt_len, ikm, ikm_len, prk) ||
-           crypto_hkdf_expand(md, prk, mbedtls_md_get_size(md), info, info_len,
-                              okm, okm_len);
-}
-
-/* HKDF-Extract(salt, IKM) -> PRK */
-int
-crypto_hkdf_extract(const mbedtls_md_info_t *md, const unsigned char *salt,
-                    int salt_len, const unsigned char *ikm, int ikm_len,
-                    unsigned char *prk)
-{
-    int hash_len;
-    unsigned char null_salt[MBEDTLS_MD_MAX_SIZE] = { '\0' };
-
-    if (salt_len < 0) {
-        return CRYPTO_ERROR;
-    }
-
-    hash_len = mbedtls_md_get_size(md);
-
-    if (salt == NULL) {
-        salt     = null_salt;
-        salt_len = hash_len;
-    }
-
-    return mbedtls_md_hmac(md, salt, salt_len, ikm, ikm_len, prk);
-}
-
-/* HKDF-Expand(PRK, info, L) -> OKM */
-int
-crypto_hkdf_expand(const mbedtls_md_info_t *md, const unsigned char *prk,
-                   int prk_len, const unsigned char *info, int info_len,
-                   unsigned char *okm, int okm_len)
-{
-    int hash_len;
-    int N;
-    int T_len = 0, where = 0, i, ret;
-    mbedtls_md_context_t ctx;
-    unsigned char T[MBEDTLS_MD_MAX_SIZE];
-
-    if (info_len < 0 || okm_len < 0 || okm == NULL) {
-        return CRYPTO_ERROR;
-    }
-
-    hash_len = mbedtls_md_get_size(md);
-
-    if (prk_len < hash_len) {
-        return CRYPTO_ERROR;
-    }
-
-    if (info == NULL) {
-        info = (const unsigned char *)"";
-    }
-
-    N = okm_len / hash_len;
-
-    if ((okm_len % hash_len) != 0) {
-        N++;
-    }
-
-    if (N > 255) {
-        return CRYPTO_ERROR;
-    }
-
-    mbedtls_md_init(&ctx);
-
-    if ((ret = mbedtls_md_setup(&ctx, md, 1)) != 0) {
-        mbedtls_md_free(&ctx);
-        return ret;
-    }
-
-    /* Section 2.3. */
-    for (i = 1; i <= N; i++) {
-        unsigned char c = i;
-
-        ret = mbedtls_md_hmac_starts(&ctx, prk, prk_len) ||
-              mbedtls_md_hmac_update(&ctx, T, T_len) ||
-              mbedtls_md_hmac_update(&ctx, info, info_len) ||
-              /* The constant concatenated to the end of each T(n) is a single
-               * octet. */
-              mbedtls_md_hmac_update(&ctx, &c, 1) ||
-              mbedtls_md_hmac_finish(&ctx, T);
-
-        if (ret != 0) {
-            mbedtls_md_free(&ctx);
-            return ret;
-        }
-
-        memcpy(okm + where, T, (i != N) ? hash_len : (okm_len - where));
-        where += hash_len;
-        T_len  = hash_len;
-    }
-
-    mbedtls_md_free(&ctx);
-
-    return 0;
 }
 
 int

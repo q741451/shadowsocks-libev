@@ -78,10 +78,35 @@ esac
 dnl Checks for TLS
 AX_TLS([:], [:])
 
-dnl Checks for crypto libraries
-ss_MBEDTLS
-ss_SODIUM
+dnl 本分支不依赖 libsodium 与 mbedTLS：ChaCha20 取自 libsodium 并内联在
+dnl src/vendor 下，MD5 为本地实现，详见 src/vendor/README.md
 ss_CARES
+
+dnl ChaCha20 在 x86 上有 SSSE3 / AVX2 实现，由 src/vendor/runtime.c 在运行时
+dnl 按 CPU 特性选择。这些文件靠 HAVE_* 宏开关功能，漏定义不会报错、只会静默
+dnl 退回纯 C 实现，所以启动日志会打印实际选中的实现。
+dnl HAVE__XGETBV 是 MSVC 风格内建，GCC 上须改用 HAVE_AVX_ASM。
+AC_MSG_CHECKING(whether target CPU has SIMD paths for ChaCha20)
+case $host_cpu in
+  i[[3456]]86|x86_64|amd64)
+    arch_x86=yes
+    dnl 必须用 -D 直接传给编译器：vendor 的源码来自 libsodium，不 include
+    dnl config.h，走 AC_DEFINE 的话这些宏根本到不了它们那里，表现为静默退回
+    dnl 纯 C 实现（编译链接都不报错）。
+    CHACHA20_SIMD_CFLAGS="-DHAVE_CPUID -DHAVE_AVX_ASM"
+    CHACHA20_SIMD_CFLAGS="$CHACHA20_SIMD_CFLAGS -DHAVE_EMMINTRIN_H -DHAVE_PMMINTRIN_H"
+    CHACHA20_SIMD_CFLAGS="$CHACHA20_SIMD_CFLAGS -DHAVE_TMMINTRIN_H -DHAVE_SMMINTRIN_H"
+    CHACHA20_SIMD_CFLAGS="$CHACHA20_SIMD_CFLAGS -DHAVE_AVXINTRIN_H -DHAVE_AVX2INTRIN_H"
+    AC_MSG_RESULT(yes: SSSE3 and AVX2)
+    ;;
+  *)
+    arch_x86=no
+    CHACHA20_SIMD_CFLAGS=""
+    AC_MSG_RESULT(no: portable C only)
+    ;;
+esac
+AC_SUBST([CHACHA20_SIMD_CFLAGS])
+AM_CONDITIONAL([ARCH_X86], [test "x$arch_x86" = "xyes"])
 
 dnl Checks for inet_ntop
 ss_FUNC_INET_NTOP
@@ -239,7 +264,8 @@ AC_CHECK_LIB([ev], [ev_loop_destroy], [LIBS="-lev $LIBS"], [AC_MSG_ERROR([Couldn
 AC_CONFIG_FILES([shadowsocks-libev.pc
                  Makefile
                  doc/Makefile
-                 src/Makefile])
+                 src/Makefile
+                 src/vendor/Makefile])
 
 AM_COND_IF([USE_SYSTEM_SHARED_LIB],
 		   [AC_DEFINE([USE_SYSTEM_SHARED_LIB], [1], [Define if use system shared lib.])],

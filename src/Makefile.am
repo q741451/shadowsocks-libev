@@ -8,8 +8,12 @@ AM_CFLAGS += -I$(top_srcdir)/libipset/include
 AM_CFLAGS += -I$(top_srcdir)/libcork/include
 endif
 AM_CFLAGS += $(LIBPCRE_CFLAGS)
+AM_CFLAGS += -I$(top_srcdir)/src/vendor
+
+SUBDIRS = vendor
 
 SS_COMMON_LIBS = $(INET_NTOP_LIB) $(LIBPCRE_LIBS)
+SS_COMMON_LIBS += $(top_builddir)/src/vendor/libsschacha20.la
 if !USE_SYSTEM_SHARED_LIB
 SS_COMMON_LIBS += $(top_builddir)/libbloom/libbloom.la \
                   $(top_builddir)/libipset/libipset.la \
@@ -17,7 +21,7 @@ SS_COMMON_LIBS += $(top_builddir)/libbloom/libbloom.la \
 else
 SS_COMMON_LIBS += -lbloom -lcork -lcorkipset
 endif
-SS_COMMON_LIBS += -lev -lsodium -lm
+SS_COMMON_LIBS += -lev -lm
 
 bin_PROGRAMS = ss-local ss-tunnel ss-server
 if !BUILD_WINCOMPAT
@@ -27,9 +31,11 @@ endif
 acl_src = rule.c \
           acl.c
 
+# ChaCha20 取自 libsodium 并内联在 vendor/ 下，MD5 为本地实现，
+# 因此不再依赖 libsodium 与 mbedTLS，详见 vendor/README.md
 crypto_src = crypto.c \
-             aead.c \
              stream.c \
+             md5.c \
              ppbloom.c \
              base64.c
 
@@ -109,7 +115,7 @@ libshadowsocks_libev_la_LDFLAGS = -version-info $(VERSION_INFO)
 libshadowsocks_libev_la_LIBADD = $(ss_local_LDADD)
 include_HEADERS = shadowsocks.h
 
-noinst_HEADERS = acl.h crypto.h stream.h aead.h json.h netutils.h redir.h server.h uthash.h \
+noinst_HEADERS = acl.h crypto.h stream.h json.h netutils.h redir.h server.h uthash.h \
                  cache.h local.h plugin.h resolv.h tunnel.h utils.h base64.h ppbloom.h \
                  common.h jconf.h manager.h rule.h socks5.h udprelay.h winsock.h
 EXTRA_DIST = ss-nat

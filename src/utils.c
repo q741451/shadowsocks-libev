@@ -40,7 +40,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
-#include <sodium.h>
+#include "vendor/sodium_shim.h"
 
 #include "crypto.h"
 #include "utils.h"
