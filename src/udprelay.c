@@ -74,8 +74,27 @@
 #define EWOULDBLOCK EAGAIN
 #endif
 
+/*
+ * 一次事件回调最多连续处理多少个包。
+ *
+ * 原先每次回调只收一个包就返回事件循环，于是每个 UDP 包都要多付一次
+ * epoll_wait。UDP 的成本是按包算的，省掉这一次调用在高负载下是实打实的收益。
+ *
+ * 实测（测试机 Celeron 1037U，ss-server 中继 64 字节包，每包 CPU）：
+ *     3000 pps   49.3 -> 49.3 us   无变化
+ *    10000 pps   37.0 -> 33.8 us   -8.6%
+ *    20000 pps   33.7 -> 31.5 us   -6.5%
+ * 低速率下没有收益是正常的：套接字里本来就只有一个包，读一个即 EAGAIN，
+ * 那次 epoll_wait 省不掉；只有包排队时才摊得开。
+ *
+ * 上限的作用是防止 UDP 洪水把事件循环占死，饿着 TCP 侧的 watcher。
+ */
+#define MAX_UDP_BATCH 32
+
 static void server_recv_cb(EV_P_ ev_io *w, int revents);
 static void remote_recv_cb(EV_P_ ev_io *w, int revents);
+static int server_recv_one(EV_P_ ev_io *w);
+static int remote_recv_one(EV_P_ ev_io *w);
 static void remote_timeout_cb(EV_P_ ev_timer *watcher, int revents);
 
 static char *hash_key(const int af, const struct sockaddr_storage *addr);
@@ -726,9 +745,17 @@ resolv_cb(struct sockaddr *addr, void *data)
 
 #endif
 
-static void
-remote_recv_cb(EV_P_ ev_io *w, int revents)
+/*
+ * 处理一个包。返回 0 表示还可以继续收，返回 -1 表示应停止。
+ *
+ * 注意：下面「服务端已关闭」那条路径会 close_and_free_remote(remote_ctx)，
+ * 而 remote_ctx 就是 w 本身，释放后再循环即为 use-after-free，
+ * 所以那里必须返回 -1 终止循环。
+ */
+static int
+remote_recv_one(EV_P_ ev_io *w)
 {
+    int drained = 0;
     ssize_t r;
     remote_ctx_t *remote_ctx = (remote_ctx_t *)w;
     server_ctx_t *server_ctx = remote_ctx->server_ctx;
@@ -737,7 +764,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     if (server_ctx == NULL) {
         LOGE("[udp] invalid server");
         close_and_free_remote(EV_A_ remote_ctx);
-        return;
+        return -1;      /* w 已被释放，必须停止 */
     }
 
     if (verbose) {
@@ -757,7 +784,11 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     if (r == -1) {
         // error on recv
         // simply drop that packet
-        ERROR("[udp] remote_recv_recvfrom");
+        /* 套接字已空是排空循环的正常终点，不是错误 */
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+            drained = 1;
+        else
+            ERROR("[udp] remote_recv_recvfrom");
         goto CLEAN_UP;
     } else if (r > packet_size) {
         if (verbose) {
@@ -911,11 +942,27 @@ CLEAN_UP:
 
     bfree(buf);
     ss_free(buf);
+    return drained ? -1 : 0;
 }
 
 static void
-server_recv_cb(EV_P_ ev_io *w, int revents)
+remote_recv_cb(EV_P_ ev_io *w, int revents)
 {
+    int i;
+
+    for (i = 0; i < MAX_UDP_BATCH; i++)
+        if (remote_recv_one(EV_A_ w) != 0)
+            break;
+}
+
+/*
+ * 处理一个包。返回 0 表示还可以继续收，返回 -1 表示套接字已空、应停止。
+ * 这里的 w 是 server_ctx，本函数不会释放它，因此外层循环是安全的。
+ */
+static int
+server_recv_one(EV_P_ ev_io *w)
+{
+    int drained = 0;
     server_ctx_t *server_ctx = (server_ctx_t *)w;
     struct sockaddr_storage src_addr;
     memset(&src_addr, 0, sizeof(struct sockaddr_storage));
@@ -946,7 +993,11 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
     buf->len = recvmsg(server_ctx->fd, &msg, 0);
     if (buf->len == -1) {
-        ERROR("[udp] server_recvmsg");
+        /* 套接字已空是排空循环的正常终点，不是错误 */
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+            drained = 1;
+        else
+            ERROR("[udp] server_recvmsg");
         goto CLEAN_UP;
     } else if (buf->len > packet_size) {
         if (verbose) {
@@ -969,7 +1020,11 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     if (r == -1) {
         // error on recv
         // simply drop that packet
-        ERROR("[udp] server_recv_recvfrom");
+        /* 套接字已空是排空循环的正常终点，不是错误 */
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+            drained = 1;
+        else
+            ERROR("[udp] server_recv_recvfrom");
         goto CLEAN_UP;
     } else if (r > packet_size) {
         if (verbose) {
@@ -1372,6 +1427,17 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 CLEAN_UP:
     bfree(buf);
     ss_free(buf);
+    return drained ? -1 : 0;
+}
+
+static void
+server_recv_cb(EV_P_ ev_io *w, int revents)
+{
+    int i;
+
+    for (i = 0; i < MAX_UDP_BATCH; i++)
+        if (server_recv_one(EV_A_ w) != 0)
+            break;
 }
 
 void
