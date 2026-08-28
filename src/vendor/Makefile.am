@@ -7,7 +7,14 @@
 #
 # 另外这些是外来代码，不套用本项目的 -Werror。
 
-AM_CFLAGS = -g -O2 -Wall -fno-strict-aliasing -std=gnu99 -D_GNU_SOURCE
+# ChaCha20 是全项目唯一逐字节执行的代码，单独提高优化等级。
+# 等级取自 build-aux/optflags.sh，不在这里写死。
+#
+# 必须追加在 @CFLAGS@ 之后：automake 的编译行是 $(AM_CFLAGS) $(CFLAGS)，
+# gcc 取最后一个 -O，写进 AM_CFLAGS 会被全局等级盖掉。
+CFLAGS = @CFLAGS@ @SS_OPT_CRYPTO@
+
+AM_CFLAGS = -g -Wall -fno-strict-aliasing -std=gnu99 -D_GNU_SOURCE
 AM_CFLAGS += -Wno-error -Wno-unused-function
 # libsodium 的 private/common.h 在未定义 CONFIGURED 时会发三条 #warning，
 # 提示"正在以未记录的方式编译"。这里的用法正是如此且已充分验证，故消掉噪音。

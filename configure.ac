@@ -75,6 +75,13 @@ case $host in
     ;;
 esac
 
+dnl 优化等级策略集中在 build-aux/optflags.sh，scripts/build-static.sh 也 source
+dnl 同一个文件，避免两处各写一套而漂移。
+. "$srcdir/build-aux/optflags.sh"
+AC_SUBST([SS_OPT_CRYPTO])
+AC_SUBST([SS_OPT_HOT])
+AC_SUBST([SS_OPT_COLD])
+
 dnl Checks for TLS
 AX_TLS([:], [:])
 

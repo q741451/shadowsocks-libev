@@ -23,7 +23,11 @@ CARES=1.18.1;      CARES_SHA=1a7d52a8a84a9fbffb1be9133c0f6e17217d91ea5a6fa61f6b4
 
 export CC=$HOST-gcc AR=$HOST-ar RANLIB=$HOST-ranlib STRIP=$HOST-strip
 # musl.cc 的工具链默认 PIE，不给 -no-pie 的话 -static 出来的仍是动态对象
-export CFLAGS="-Os -fno-pie"
+# 优化等级策略见 build-aux/optflags.sh，configure.ac 也 source 同一个文件
+. "$ROOT/build-aux/optflags.sh"
+CFLAGS_HOT="$SS_OPT_HOT $SS_CFLAGS_COMMON"
+CFLAGS_COLD="$SS_OPT_COLD $SS_CFLAGS_COMMON"
+export CFLAGS="$CFLAGS_HOT"
 export LDFLAGS="-no-pie"
 
 mkdir -p "$DL" "$DEPS" "$OBJ" "$DIST"
@@ -69,9 +73,10 @@ fetch c-ares-$CARES.tar.gz $CARES_SHA \
   "https://github.com/c-ares/c-ares/releases/download/cares-${CARES//./_}/c-ares-$CARES.tar.gz" \
   "https://sources.openwrt.org/c-ares-$CARES.tar.gz"
 
-build_ac libev-$LIBEV.tar.gz         libev-$LIBEV
-build_ac pcre-$PCRE.tar.gz           pcre-$PCRE      --disable-cpp
-build_ac c-ares-$CARES.tar.gz        c-ares-$CARES
+CFLAGS="$CFLAGS_HOT"  build_ac libev-$LIBEV.tar.gz      libev-$LIBEV
+CFLAGS="$CFLAGS_COLD" build_ac pcre-$PCRE.tar.gz        pcre-$PCRE      --disable-cpp
+CFLAGS="$CFLAGS_COLD" build_ac c-ares-$CARES.tar.gz     c-ares-$CARES
+CFLAGS="$CFLAGS_HOT"
 
 echo "===== shadowsocks-libev ====="
 [ -f "$ROOT/configure" ] || (cd "$ROOT" && ./autogen.sh >/dev/null 2>&1)
@@ -82,7 +87,7 @@ mkdir -p "$OBJ/ss" && cd "$OBJ/ss"
     CFLAGS="$CFLAGS -I$DEPS/include" >/dev/null
 # -all-static 是 libtool 的参数、编译器不认，放进 configure 会让它的编译器测试失败，
 # 只能在 make 时传；且必须一并带上 -L$DEPS/lib，否则会盖掉 configure 记下的库路径
-SSLD="-no-pie -all-static -L$DEPS/lib"
+SSLD="-no-pie -all-static -Wl,--gc-sections -L$DEPS/lib"
 make -j"$(nproc)" LDFLAGS="$SSLD" >/dev/null
 make install LDFLAGS="$SSLD" >/dev/null
 cd "$ROOT"
