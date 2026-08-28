@@ -97,3 +97,6 @@ doc/*.html
 
 # Visual Studio Code
 .vscode/*
+
+# scripts/build-static.sh 的产物
+/dist/

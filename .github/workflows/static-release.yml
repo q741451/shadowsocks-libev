@@ -1,0 +1,116 @@
+name: Static Build & Release
+
+on:
+  push:
+    branches: [ slim-static ]
+    tags:
+      - 'v*-static*'
+  pull_request:
+    branches: [ slim-static ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 所有架构统一使用 abcfy2/muslcc-toolchain-ubuntu 这个 Docker Hub 镜像，
+          # 它把 musl.cc 的完整工具链目录原样打包分发，tag 就是工具链三元组名。
+          # 这样既避免了直连 musl.cc 下载不稳定的问题，也能拿到全架构的 musl 静态编译
+          # （包括 dockcross 官方镜像不提供的 x86_64-musl 和 mips 软浮点）。
+          - name: x86_64
+            tag: x86_64-linux-musl
+
+          - name: aarch64
+            tag: aarch64-linux-musl
+
+          # armv7 硬浮点，主流现代 ARM 路由器/设备
+          - name: armv7-hf
+            tag: arm-linux-musleabihf
+
+          # armv5 软浮点，老旧/低端 ARM 路由器
+          - name: armv5-sf
+            tag: arm-linux-musleabi
+
+          # mips 大端软浮点，常见无 FPU 路由器 SoC
+          - name: mips-sf
+            tag: mips-linux-muslsf
+
+          # mipsel 小端软浮点，MTK/Ralink 等常见路由器 SoC
+          - name: mipsel-sf
+            tag: mipsel-linux-muslsf
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Pull cross toolchain image
+        run: docker pull abcfy2/muslcc-toolchain-ubuntu:${{ matrix.tag }}
+
+      - name: Build
+        run: |
+          set -e
+          # 镜像只带裸交叉编译器，构建环境要自己装
+          docker run --rm \
+            -v "${{ github.workspace }}":/work \
+            -w /work \
+            abcfy2/muslcc-toolchain-ubuntu:${{ matrix.tag }} \
+            bash -c '
+              set -e
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y -qq --no-install-recommends \
+                make autoconf automake libtool pkg-config \
+                curl ca-certificates xz-utils file patch >/dev/null
+              ./scripts/build-static.sh ${{ matrix.tag }}
+            '
+
+      - name: Package
+        run: |
+          set -e
+          # 一个平台的多个可执行文件打成一个压缩包
+          OUT=shadowsocks-libev-${{ matrix.name }}
+          mkdir -p "release/$OUT"
+          cp dist/${{ matrix.tag }}/* "release/$OUT/"
+          cp LICENSE "release/$OUT/" 2>/dev/null || true
+          tar -C release -czf "release/$OUT.tar.gz" "$OUT"
+          rm -rf "release/$OUT"
+          ls -l release/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadowsocks-libev-${{ matrix.name }}
+          path: release/shadowsocks-libev-${{ matrix.name }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Create Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifacts
+        run: |
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          cd release && sha256sum * > SHA256SUMS.txt
+          ls -la
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
