@@ -20,6 +20,11 @@ SS_OPT_HOT="-O2"
 SS_OPT_COLD="-Os"
 
 # 与优化等级无关、所有组件共用的开关。
+#
 # -ffunction-sections/-fdata-sections 必须编译期就加，否则链接时的
 # --gc-sections 在库内部使不上劲。
-SS_CFLAGS_COMMON="-fno-pie -ffunction-sections -fdata-sections"
+#
+# -fno-asynchronous-unwind-tables 去掉 .eh_frame（实测 12.4K，占 ss-redir 的
+# 5.8%）。那是异常展开表，纯 C 程序用不到，全项目 grep backtrace/_Unwind/
+# execinfo 零命中。代价仅是崩溃时拿不到完整调用栈，而发布产物本就已 strip。
+SS_CFLAGS_COMMON="-fno-pie -ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables"
