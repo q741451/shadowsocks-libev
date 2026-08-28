@@ -87,6 +87,22 @@ typedef struct remote_ctx {
 #ifdef MODULE_REMOTE
     struct sockaddr_storage dst_addr;
 #endif
+#ifdef MODULE_REDIR
+    /* A reply has to leave from the original destination address, which needs
+     * an IP_TRANSPARENT socket bound to it. Creating one per packet costs a
+     * socket, four setsockopt calls, a bind and a close, most of the syscalls
+     * this path makes.
+     *
+     * It cannot be cached unconditionally: the destination is parsed out of
+     * each reply, while the session is keyed by the client address alone, so
+     * one client port may talk to several destinations. The socket is only
+     * kept once the same destination has been seen a few times in a row, which
+     * leaves single request-response sessions, the vast majority, untouched.
+     */
+    int tp_fd;                          /* cached reply socket, -1 if none */
+    struct sockaddr_storage tp_addr;    /* address tp_fd is bound to */
+    int tp_hits;                        /* consecutive replies to tp_addr */
+#endif
     struct server_ctx *server_ctx;
 } remote_ctx_t;
 

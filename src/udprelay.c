@@ -86,6 +86,11 @@
  */
 #define MAX_UDP_BATCH 32
 
+#ifdef MODULE_REDIR
+/* Replies to the same destination before the reply socket is kept around */
+#define TPROXY_CACHE_HITS 4
+#endif
+
 /*
  * A batch of packets from one recvmmsg call.
  *
@@ -650,6 +655,9 @@ new_remote(int fd, server_ctx_t *server_ctx)
     ctx->fd         = fd;
     ctx->server_ctx = server_ctx;
     ctx->af         = AF_UNSPEC;
+#ifdef MODULE_REDIR
+    ctx->tp_fd = -1;    /* the memset above left it at 0, a valid descriptor */
+#endif
 
     ev_io_init(&ctx->io, remote_recv_cb, fd, EV_READ);
     ev_timer_init(&ctx->watcher, remote_timeout_cb, server_ctx->timeout,
@@ -698,6 +706,84 @@ close_and_free_query(EV_P_ struct query_ctx *ctx)
 
 #endif
 
+#ifdef MODULE_REDIR
+/* Compares family, address and port only. sockaddr_storage has padding that
+ * may differ between two otherwise equal addresses.
+ */
+static int
+same_sockaddr(const struct sockaddr_storage *a, const struct sockaddr_storage *b)
+{
+    if (a->ss_family != b->ss_family)
+        return 0;
+
+    if (a->ss_family == AF_INET) {
+        const struct sockaddr_in *x = (const struct sockaddr_in *)a;
+        const struct sockaddr_in *y = (const struct sockaddr_in *)b;
+        return x->sin_port == y->sin_port &&
+               x->sin_addr.s_addr == y->sin_addr.s_addr;
+    }
+    if (a->ss_family == AF_INET6) {
+        const struct sockaddr_in6 *x = (const struct sockaddr_in6 *)a;
+        const struct sockaddr_in6 *y = (const struct sockaddr_in6 *)b;
+        return x->sin6_port == y->sin6_port &&
+               memcmp(&x->sin6_addr, &y->sin6_addr, sizeof(x->sin6_addr)) == 0;
+    }
+    return 0;
+}
+
+/* Socket for sending a reply as if it came from dst_addr. Returns -1 on
+ * failure, having closed the descriptor itself.
+ */
+static int
+tproxy_socket_new(const struct sockaddr_storage *src_addr,
+                  const struct sockaddr_storage *dst_addr)
+{
+    int fd, opt = 1, sol, flag;
+
+    fd = socket(src_addr->ss_family, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        ERROR("[udp] remote_recv_socket");
+        return -1;
+    }
+
+    sol  = src_addr->ss_family == AF_INET6 ? SOL_IPV6 : SOL_IP;
+    flag = src_addr->ss_family == AF_INET6 ? IPV6_TRANSPARENT : IP_TRANSPARENT;
+    if (setsockopt(fd, sol, flag, &opt, sizeof(opt))) {
+        ERROR("[udp] remote_recv_setsockopt");
+        close(fd);
+        return -1;
+    }
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+        ERROR("[udp] remote_recv_setsockopt");
+        close(fd);
+        return -1;
+    }
+#ifdef IP_TOS
+    {
+        /* Only the option matching this socket's family; setting the other one
+         * always fails with ENOPROTOOPT.
+         */
+        int tos = 46 << 2;
+        int rc;
+
+        if (src_addr->ss_family == AF_INET6)
+            rc = setsockopt(fd, IPPROTO_IPV6, IPV6_TCLASS, &tos, sizeof(tos));
+        else
+            rc = setsockopt(fd, IPPROTO_IP, IP_TOS, &tos, sizeof(tos));
+        if (rc < 0 && errno != ENOPROTOOPT)
+            LOGE("setting dscp failed: %d", errno);
+    }
+#endif
+    if (bind(fd, (const struct sockaddr *)dst_addr,
+             get_sockaddr_len((struct sockaddr *)dst_addr)) != 0) {
+        ERROR("[udp] remote_recv_bind");
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+#endif
+
 void
 close_and_free_remote(EV_P_ remote_ctx_t *ctx)
 {
@@ -705,6 +791,15 @@ close_and_free_remote(EV_P_ remote_ctx_t *ctx)
         ev_timer_stop(EV_A_ & ctx->watcher);
         ev_io_stop(EV_A_ & ctx->io);
         close(ctx->fd);
+#ifdef MODULE_REDIR
+        /* Every way a session ends - timeout, cache eviction, shutdown -
+         * reaches this function, so the cached socket is closed here too.
+         */
+        if (ctx->tp_fd >= 0) {
+            close(ctx->tp_fd);
+            ctx->tp_fd = -1;
+        }
+#endif
         ss_free(ctx);
     }
 }
@@ -942,52 +1037,54 @@ remote_recv_one(EV_P_ ev_io *w, udp_batch_t *b, int idx)
 
 #ifdef MODULE_REDIR
 
-    size_t remote_dst_addr_len = get_sockaddr_len((struct sockaddr *)&dst_addr);
+    int src_fd;
+    int keep = 0;       /* whether src_fd is the cached one, not to be closed */
 
-    int src_fd = socket(remote_ctx->src_addr.ss_family, SOCK_DGRAM, 0);
-    if (src_fd < 0) {
-        ERROR("[udp] remote_recv_socket");
-        goto CLEAN_UP;
-    }
-    int opt  = 1;
-    int sol  = remote_ctx->src_addr.ss_family == AF_INET6 ? SOL_IPV6 : SOL_IP;
-    int flag = remote_ctx->src_addr.ss_family == AF_INET6 ? IPV6_TRANSPARENT : IP_TRANSPARENT;
-    if (setsockopt(src_fd, sol, flag, &opt, sizeof(opt))) {
-        ERROR("[udp] remote_recv_setsockopt");
-        close(src_fd);
-        goto CLEAN_UP;
-    }
-    if (setsockopt(src_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
-        ERROR("[udp] remote_recv_setsockopt");
-        close(src_fd);
-        goto CLEAN_UP;
-    }
-#ifdef IP_TOS
-    // Set QoS flag
-    int tos   = 46 << 2;
-    int rc = setsockopt(src_fd, IPPROTO_IP, IP_TOS, &tos, sizeof(tos));
-    if (rc < 0 && errno != ENOPROTOOPT) {
-        LOGE("setting ipv4 dscp failed: %d", errno);
-    }
-    rc = setsockopt(src_fd, IPPROTO_IPV6, IPV6_TCLASS, &tos, sizeof(tos));
-    if (rc < 0 && errno != ENOPROTOOPT) {
-        LOGE("setting ipv6 dscp failed: %d", errno);
-    }
-#endif
-    if (bind(src_fd, (struct sockaddr *)&dst_addr, remote_dst_addr_len) != 0) {
-        ERROR("[udp] remote_recv_bind");
-        close(src_fd);
-        goto CLEAN_UP;
+    if (remote_ctx->tp_fd >= 0 &&
+        same_sockaddr(&remote_ctx->tp_addr, &dst_addr)) {
+        src_fd = remote_ctx->tp_fd;
+        keep   = 1;
+    } else {
+        /* Destination changed, so the cached socket is bound to the wrong
+         * address and has to go.
+         */
+        if (remote_ctx->tp_fd >= 0) {
+            close(remote_ctx->tp_fd);
+            remote_ctx->tp_fd = -1;
+        }
+
+        if (same_sockaddr(&remote_ctx->tp_addr, &dst_addr)) {
+            remote_ctx->tp_hits++;
+        } else {
+            memcpy(&remote_ctx->tp_addr, &dst_addr, sizeof(dst_addr));
+            remote_ctx->tp_hits = 1;
+        }
+
+        src_fd = tproxy_socket_new(&remote_ctx->src_addr, &dst_addr);
+        if (src_fd < 0)
+            goto CLEAN_UP;
+
+        /* Only worth keeping once the session has shown it keeps replying to
+         * the same destination; a lone request-response exchange would pay for
+         * a descriptor it never reuses.
+         */
+        if (remote_ctx->tp_hits >= TPROXY_CACHE_HITS) {
+            remote_ctx->tp_fd = src_fd;
+            keep = 1;
+        }
     }
 
     int s = sendto(src_fd, buf->data, buf->len, 0,
                    (struct sockaddr *)&remote_ctx->src_addr, remote_src_addr_len);
     if (s == -1 && !(errno == EAGAIN || errno == EWOULDBLOCK)) {
         ERROR("[udp] remote_recv_sendto");
+        if (keep)
+            remote_ctx->tp_fd = -1;
         close(src_fd);
         goto CLEAN_UP;
     }
-    close(src_fd);
+    if (!keep)
+        close(src_fd);
 
 #else
 
