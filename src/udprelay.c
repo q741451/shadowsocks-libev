@@ -60,10 +60,13 @@
  * held until the session times out, so the steady state is roughly the new
  * session rate times the timeout, which the previous 256 was well below.
  *
- * Raising it costs almost nothing: cache_create() only records the limit and
- * the hash table grows on demand.
+ * This is a per-socket limit, and a dual-stack redir listener has one socket
+ * per family, so the two together reach twice this number.
+ *
+ * The size costs almost nothing: cache_create() only records the limit and the
+ * hash table grows on demand.
  */
-#define MAX_UDP_CONN_NUM 8192
+#define MAX_UDP_CONN_NUM 4096
 
 #ifdef MODULE_REMOTE
 #ifdef MODULE_
