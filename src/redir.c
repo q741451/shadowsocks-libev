@@ -125,6 +125,33 @@ getdestaddr(int fd, struct sockaddr_storage *destaddr)
     if (error) {
         return -1;
     }
+
+    /*
+     * A v4-mapped address means the connection arrived over IPv4 on a
+     * dual-stack socket. Relaying it as it stands would put ATYP 4 and a
+     * 16-byte address on the wire, and the remote end would open an AF_INET6
+     * socket for what is an IPv4 destination, so any address selection or
+     * policy it applies for IPv4 would not match. Unmap it back to the family
+     * it really is. Wildcard listeners are split per family and never see
+     * this, but a listener bound to a specific address still can.
+     */
+    if (destaddr->ss_family == AF_INET6) {
+        struct sockaddr_in6 *sa6 = (struct sockaddr_in6 *)destaddr;
+
+        if (IN6_IS_ADDR_V4MAPPED(&sa6->sin6_addr)) {
+            struct sockaddr_in sa4;
+
+            memset(&sa4, 0, sizeof(sa4));
+            sa4.sin_family = AF_INET;
+            sa4.sin_port   = sa6->sin6_port;
+            memcpy(&sa4.sin_addr, &sa6->sin6_addr.s6_addr[12],
+                   sizeof(sa4.sin_addr));
+
+            memset(destaddr, 0, sizeof(*destaddr));
+            memcpy(destaddr, &sa4, sizeof(sa4));
+        }
+    }
+
     return 0;
 }
 
@@ -169,6 +196,22 @@ create_and_bind(const char *addr, const char *port)
         }
 
         int opt = 1;
+
+        /*
+         * The IPv6 wildcard is bound v6-only and paired with an IPv4 socket, so
+         * that an IPv4 connection lands on an AF_INET socket. Its original
+         * destination is then reported as an IPv4 address instead of a v4-mapped
+         * one, which would otherwise be relayed as an IPv6 target.
+         *
+         * Only the wildcard: binding a v4-mapped address such as ::ffff:0.0.0.0
+         * needs a dual-stack socket, and asking for v6-only there fails with
+         * EINVAL. The condition matches the one guarding the companion socket.
+         */
+        if (rp->ai_family == AF_INET6 &&
+            IN6_IS_ADDR_UNSPECIFIED(&((struct sockaddr_in6 *)rp->ai_addr)->sin6_addr)) {
+            setsockopt(listen_sock, IPPROTO_IPV6, IPV6_V6ONLY, &opt, sizeof(opt));
+        }
+
         setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 #ifdef SO_NOSIGPIPE
         setsockopt(listen_sock, SOL_SOCKET, SO_NOSIGPIPE, &opt, sizeof(opt));
@@ -1254,6 +1297,30 @@ main(int argc, char **argv)
 
             ev_io_init(&listen_ctx_current->io, accept_cb, listenfd, EV_READ);
             ev_io_start(loop, &listen_ctx_current->io);
+
+            /*
+             * Pair the wildcard IPv6 listener with an IPv4 one. Both carry the
+             * same settings and differ only in the socket they watch. Losing the
+             * companion leaves IPv6 working, so this only warns.
+             */
+            if (is_ipv6_wildcard_socket(listenfd)) {
+                int listenfd_v4 = create_and_bind("0.0.0.0", local_port);
+                if (listenfd_v4 != -1 && listen(listenfd_v4, SOMAXCONN) == -1) {
+                    close(listenfd_v4);
+                    listenfd_v4 = -1;
+                }
+                if (listenfd_v4 == -1) {
+                    LOGE("cannot listen on the IPv4 wildcard, IPv4 is not relayed");
+                } else {
+                    listen_ctx_t *listen_ctx_v4 = ss_malloc(sizeof(listen_ctx_t));
+                    memcpy(listen_ctx_v4, listen_ctx_current, sizeof(listen_ctx_t));
+                    setnonblocking(listenfd_v4);
+                    listen_ctx_v4->fd = listenfd_v4;
+                    ev_io_init(&listen_ctx_v4->io, accept_cb, listenfd_v4, EV_READ);
+                    ev_io_start(loop, &listen_ctx_v4->io);
+                    LOGI("dual stack: listening on both wildcards");
+                }
+            }
         }
 
         // Setup UDP
