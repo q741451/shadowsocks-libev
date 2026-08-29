@@ -60,13 +60,17 @@
  * held until the session times out, so the steady state is roughly the new
  * session rate times the timeout, which the previous 256 was well below.
  *
+ * IPv6 makes the count grow faster than the host count suggests: with temporary
+ * addresses on, one machine cycles through several source addresses and holds a
+ * slot under each until they time out.
+ *
  * This is a per-socket limit, and a dual-stack redir listener has one socket
  * per family, so the two together reach twice this number.
  *
- * The size costs almost nothing: cache_create() only records the limit and the
- * hash table grows on demand.
+ * The size itself costs nothing: cache_create() only records the limit and the
+ * hash table grows on demand, so memory follows the sessions actually live.
  */
-#define MAX_UDP_CONN_NUM 4096
+#define MAX_UDP_CONN_NUM 16384
 
 #ifdef MODULE_REMOTE
 #ifdef MODULE_
