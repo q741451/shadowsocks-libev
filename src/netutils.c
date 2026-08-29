@@ -313,3 +313,28 @@ is_ipv6only(ss_addr_t *servers, size_t server_num, int ipv6first)
     }
     return 1;
 }
+
+/*
+ * Tells whether a socket is bound to the IPv6 wildcard.
+ *
+ * Transparent proxying cannot be served by a single dual-stack socket:
+ * IP_TRANSPARENT and IP_RECVORIGDSTADDR are per-family options, and the kernel
+ * reports the original destination of an IPv4 packet through SOL_IP, which was
+ * never enabled on an AF_INET6 socket. A wildcard IPv6 listener therefore needs
+ * an IPv4 companion, and this is how the caller knows to create one.
+ */
+int
+is_ipv6_wildcard_socket(int fd)
+{
+    struct sockaddr_storage addr;
+    socklen_t len = sizeof(addr);
+
+    if (getsockname(fd, (struct sockaddr *)&addr, &len) != 0) {
+        return 0;
+    }
+    if (addr.ss_family != AF_INET6) {
+        return 0;
+    }
+
+    return IN6_IS_ADDR_UNSPECIFIED(&((struct sockaddr_in6 *)&addr)->sin6_addr);
+}

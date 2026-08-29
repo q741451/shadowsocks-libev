@@ -1593,6 +1593,55 @@ free_cb(void *key, void *element)
     close_and_free_remote(EV_DEFAULT, remote_ctx);
 }
 
+/*
+ * Wires one bound socket into the event loop. Every listening socket owns its
+ * session cache, so the two sockets of a dual-stack listener never share state.
+ */
+static server_ctx_t *
+start_server_ctx(struct ev_loop *loop, int serverfd,
+#ifdef MODULE_LOCAL
+                 const struct sockaddr *remote_addr, const int remote_addr_len,
+#ifdef MODULE_TUNNEL
+                 const ss_addr_t tunnel_addr,
+#endif
+#endif
+                 crypto_t *crypto, int timeout, const char *iface)
+{
+    struct cache *conn_cache;
+    server_ctx_t *server_ctx;
+
+    if (server_num >= MAX_REMOTE_NUM) {
+        LOGE("[udp] too many listening sockets");
+        return NULL;
+    }
+
+    setnonblocking(serverfd);
+
+    cache_create(&conn_cache, MAX_UDP_CONN_NUM, free_cb);
+
+    server_ctx = new_server_ctx(serverfd);
+#ifdef MODULE_REMOTE
+    server_ctx->loop = loop;
+#endif
+    server_ctx->timeout    = max(timeout, MIN_UDP_TIMEOUT);
+    server_ctx->crypto     = crypto;
+    server_ctx->iface      = iface;
+    server_ctx->conn_cache = conn_cache;
+#ifdef MODULE_LOCAL
+    server_ctx->remote_addr     = remote_addr;
+    server_ctx->remote_addr_len = remote_addr_len;
+#ifdef MODULE_TUNNEL
+    server_ctx->tunnel_addr = tunnel_addr;
+#endif
+#endif
+
+    ev_io_start(loop, &server_ctx->io);
+
+    server_ctx_list[server_num++] = server_ctx;
+
+    return server_ctx;
+}
+
 int
 init_udprelay(const char *server_host, const char *server_port,
 #ifdef MODULE_LOCAL
@@ -1621,31 +1670,38 @@ init_udprelay(const char *server_host, const char *server_port,
     if (serverfd < 0) {
         return -1;
     }
-    setnonblocking(serverfd);
 
-    // Initialize cache
-    struct cache *conn_cache;
-    cache_create(&conn_cache, MAX_UDP_CONN_NUM, free_cb);
-
-    server_ctx_t *server_ctx = new_server_ctx(serverfd);
-#ifdef MODULE_REMOTE
-    server_ctx->loop = loop;
-#endif
-    server_ctx->timeout    = max(timeout, MIN_UDP_TIMEOUT);
-    server_ctx->crypto     = crypto;
-    server_ctx->iface      = iface;
-    server_ctx->conn_cache = conn_cache;
+    if (start_server_ctx(loop, serverfd,
 #ifdef MODULE_LOCAL
-    server_ctx->remote_addr     = remote_addr;
-    server_ctx->remote_addr_len = remote_addr_len;
+                         remote_addr, remote_addr_len,
 #ifdef MODULE_TUNNEL
-    server_ctx->tunnel_addr = tunnel_addr;
+                         tunnel_addr,
 #endif
 #endif
+                         crypto, timeout, iface) == NULL) {
+        close(serverfd);
+        return -1;
+    }
 
-    ev_io_start(loop, &server_ctx->io);
-
-    server_ctx_list[server_num++] = server_ctx;
+#ifdef MODULE_REDIR
+    /*
+     * See is_ipv6_wildcard_socket(): a wildcard IPv6 socket is bound v6-only,
+     * so IPv4 traffic needs a socket of its own. Losing it leaves IPv6 working
+     * rather than failing the whole relay, so this only warns.
+     */
+    if (is_ipv6_wildcard_socket(serverfd)) {
+        int serverfd_v4 = create_server_socket("0.0.0.0", server_port);
+        if (serverfd_v4 < 0) {
+            LOGE("[udp] cannot bind the IPv4 wildcard, IPv4 is not relayed");
+        } else if (start_server_ctx(loop, serverfd_v4, remote_addr,
+                                    remote_addr_len, crypto, timeout,
+                                    iface) == NULL) {
+            close(serverfd_v4);
+        } else {
+            LOGI("[udp] dual stack: listening on both wildcards");
+        }
+    }
+#endif
 
     return serverfd;
 }
