@@ -151,6 +151,18 @@ create_and_bind(const char *addr, const char *port)
         }
 
         int opt = 1;
+
+        /*
+         * The IPv6 wildcard is bound v6-only and paired with an IPv4 socket, as
+         * in ss-redir, so that -b :: serves both families. Only the
+         * wildcard: binding a v4-mapped address such as ::ffff:0.0.0.0 needs a
+         * dual-stack socket, and asking for v6-only there fails with EINVAL.
+         */
+        if (rp->ai_family == AF_INET6 &&
+            IN6_IS_ADDR_UNSPECIFIED(&((struct sockaddr_in6 *)rp->ai_addr)->sin6_addr)) {
+            setsockopt(listen_sock, IPPROTO_IPV6, IPV6_V6ONLY, &opt, sizeof(opt));
+        }
+
         setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 #ifdef SO_NOSIGPIPE
         setsockopt(listen_sock, SOL_SOCKET, SO_NOSIGPIPE, &opt, sizeof(opt));
@@ -1309,6 +1321,30 @@ main(int argc, char **argv)
 
         ev_io_init(&listen_ctx.io, accept_cb, listenfd, EV_READ);
         ev_io_start(loop, &listen_ctx.io);
+
+        /*
+         * Pair the wildcard IPv6 listener with an IPv4 one. Both carry the
+         * same settings and differ only in the socket they watch. Losing the
+         * companion leaves IPv6 working, so this only warns.
+         */
+        if (is_ipv6_wildcard_socket(listenfd)) {
+            int listenfd_v4 = create_and_bind("0.0.0.0", local_port);
+            if (listenfd_v4 != -1 && listen(listenfd_v4, SOMAXCONN) == -1) {
+                close(listenfd_v4);
+                listenfd_v4 = -1;
+            }
+            if (listenfd_v4 == -1) {
+                LOGE("cannot listen on the IPv4 wildcard, IPv4 is not relayed");
+            } else {
+                listen_ctx_t *listen_ctx_v4 = ss_malloc(sizeof(listen_ctx_t));
+                memcpy(listen_ctx_v4, &listen_ctx, sizeof(listen_ctx_t));
+                setnonblocking(listenfd_v4);
+                listen_ctx_v4->fd = listenfd_v4;
+                ev_io_init(&listen_ctx_v4->io, accept_cb, listenfd_v4, EV_READ);
+                ev_io_start(loop, &listen_ctx_v4->io);
+                LOGI("dual stack: listening on both wildcards");
+            }
+        }
     }
 
     // Setup UDP

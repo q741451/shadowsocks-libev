@@ -64,8 +64,8 @@
  * addresses on, one machine cycles through several source addresses and holds a
  * slot under each until they time out.
  *
- * This is a per-socket limit, and a dual-stack redir listener has one socket
- * per family, so the two together reach twice this number.
+ * This is a per-socket limit, and a dual-stack listener has one socket per
+ * family, so the two together reach twice this number.
  *
  * The size itself costs nothing: cache_create() only records the limit and the
  * hash table grows on demand, so memory follows the sessions actually live.
@@ -1690,7 +1690,7 @@ init_udprelay(const char *server_host, const char *server_port,
         return -1;
     }
 
-#ifdef MODULE_REDIR
+#if defined(MODULE_REDIR) || defined(MODULE_TUNNEL)
     /*
      * See is_ipv6_wildcard_socket(): a wildcard IPv6 socket is bound v6-only,
      * so IPv4 traffic needs a socket of its own. Losing it leaves IPv6 working
@@ -1701,8 +1701,11 @@ init_udprelay(const char *server_host, const char *server_port,
         if (serverfd_v4 < 0) {
             LOGE("[udp] cannot bind the IPv4 wildcard, IPv4 is not relayed");
         } else if (start_server_ctx(loop, serverfd_v4, remote_addr,
-                                    remote_addr_len, crypto, timeout,
-                                    iface) == NULL) {
+                                    remote_addr_len,
+#ifdef MODULE_TUNNEL
+                                    tunnel_addr,
+#endif
+                                    crypto, timeout, iface) == NULL) {
             close(serverfd_v4);
         } else {
             LOGI("[udp] dual stack: listening on both wildcards");

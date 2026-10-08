@@ -317,11 +317,13 @@ is_ipv6only(ss_addr_t *servers, size_t server_num, int ipv6first)
 /*
  * Tells whether a socket is bound to the IPv6 wildcard.
  *
- * Transparent proxying cannot be served by a single dual-stack socket:
- * IP_TRANSPARENT and IP_RECVORIGDSTADDR are per-family options, and the kernel
- * reports the original destination of an IPv4 packet through SOL_IP, which was
- * never enabled on an AF_INET6 socket. A wildcard IPv6 listener therefore needs
- * an IPv4 companion, and this is how the caller knows to create one.
+ * ss-redir and ss-tunnel bind it v6-only and pair it with an IPv4 companion,
+ * so that -b :: serves both families, and this is how the caller knows to
+ * create one. ss-redir has no other choice: transparent proxying cannot be
+ * served by a single dual-stack socket, since IP_TRANSPARENT and
+ * IP_RECVORIGDSTADDR are per-family options, and the kernel reports the
+ * original destination of an IPv4 packet through SOL_IP, which was never
+ * enabled on an AF_INET6 socket. ss-tunnel follows the same shape.
  */
 int
 is_ipv6_wildcard_socket(int fd)
