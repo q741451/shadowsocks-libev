@@ -48,6 +48,13 @@
 #define DEFAULT_PACKET_SIZE 1397 // 1492 - PACKET_HEADER_SIZE = 1397, the default MTU for UDP relay
 #define MAX_ADDR_HEADER_SIZE (1 + 256 + 2) // 1-byte atyp + 256-byte hostname + 2-byte port
 
+/* ss-tunnel replies to IPv6 clients from the address they sent to; MinGW has
+ * no sendmsg and keeps plain sendto
+ */
+#if defined(MODULE_TUNNEL) && !defined(__MINGW32__)
+#define TUNNEL_PKTINFO
+#endif
+
 typedef struct server_ctx {
     ev_io io;
     int fd;
@@ -102,6 +109,13 @@ typedef struct remote_ctx {
     int tp_fd;                          /* cached reply socket, -1 if none */
     struct sockaddr_storage tp_addr;    /* address tp_fd is bound to */
     int tp_hits;                        /* consecutive replies to tp_addr */
+#endif
+#ifdef TUNNEL_PKTINFO
+    /* The local address an IPv6 client last sent to, for replies to leave
+     * from (see tunnel_local_addr()); unset for IPv4.
+     */
+    struct in6_pktinfo local;
+    int has_local;
 #endif
     struct server_ctx *server_ctx;
 } remote_ctx_t;

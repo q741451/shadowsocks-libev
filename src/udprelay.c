@@ -241,6 +241,75 @@ get_dstaddr(struct msghdr *msg, struct sockaddr_storage *dstaddr)
 
 #endif
 
+#ifdef TUNNEL_PKTINFO
+
+/*
+ * The local address an IPv6 query was sent to. A query redirected to the
+ * tunnel has its destination rewritten to the first address of the incoming
+ * interface; with several prefixes there, the source the kernel picks for the
+ * reply may be another one, which conntrack does not match, so the client
+ * never sees it. Replies therefore leave from this address. IPv4 is left to
+ * the kernel: the redirect target and the default source are both the primary
+ * address.
+ */
+static int
+tunnel_local_addr(struct msghdr *msg, const struct sockaddr_storage *src_addr,
+                  struct in6_pktinfo *local)
+{
+    struct cmsghdr *cmsg;
+
+    if (src_addr->ss_family != AF_INET6 ||
+        IN6_IS_ADDR_V4MAPPED(&((const struct sockaddr_in6 *)src_addr)->sin6_addr)) {
+        return 0;
+    }
+
+    for (cmsg = CMSG_FIRSTHDR(msg); cmsg; cmsg = CMSG_NXTHDR(msg, cmsg)) {
+        if (cmsg->cmsg_level == IPPROTO_IPV6 && cmsg->cmsg_type == IPV6_PKTINFO) {
+            memcpy(local, CMSG_DATA(cmsg), sizeof(*local));
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+/* sendto() from the local address the client sent to, when it is known */
+static ssize_t
+tunnel_reply(int fd, const buffer_t *buf, const remote_ctx_t *remote_ctx,
+             socklen_t addr_len)
+{
+    struct msghdr msg;
+    struct iovec iov;
+    struct cmsghdr *cmsg;
+    char ctrl[CMSG_SPACE(sizeof(struct in6_pktinfo))];
+
+    if (!remote_ctx->has_local) {
+        return sendto(fd, buf->data, buf->len, 0,
+                      (const struct sockaddr *)&remote_ctx->src_addr, addr_len);
+    }
+
+    iov.iov_base = buf->data;
+    iov.iov_len  = buf->len;
+    memset(&msg, 0, sizeof(msg));
+    memset(ctrl, 0, sizeof(ctrl));
+    msg.msg_name       = (void *)&remote_ctx->src_addr;
+    msg.msg_namelen    = addr_len;
+    msg.msg_iov        = &iov;
+    msg.msg_iovlen     = 1;
+    msg.msg_control    = ctrl;
+    msg.msg_controllen = sizeof(ctrl);
+
+    cmsg             = CMSG_FIRSTHDR(&msg);
+    cmsg->cmsg_level = IPPROTO_IPV6;
+    cmsg->cmsg_type  = IPV6_PKTINFO;
+    cmsg->cmsg_len   = CMSG_LEN(sizeof(struct in6_pktinfo));
+    memcpy(CMSG_DATA(cmsg), &remote_ctx->local, sizeof(struct in6_pktinfo));
+
+    return sendmsg(fd, &msg, 0);
+}
+
+#endif
+
 #define HASH_KEY_LEN sizeof(struct sockaddr_storage) + sizeof(int)
 /*
  * Receive a batch. Returns the packet count, 0 when the socket is drained and
@@ -618,6 +687,13 @@ create_server_socket(const char *host, const char *port)
         rc = setsockopt(server_sock, IPPROTO_IPV6, IPV6_TCLASS, &tos, sizeof(tos));
         if (rc < 0 && errno != ENOPROTOOPT) {
             LOGE("setting ipv6 dscp failed: %d", errno);
+        }
+#endif
+
+#ifdef TUNNEL_PKTINFO
+        if (rp->ai_family == AF_INET6 &&
+            setsockopt(server_sock, IPPROTO_IPV6, IPV6_RECVPKTINFO, &opt, sizeof(opt))) {
+            FATAL("[udp] setsockopt IPV6_RECVPKTINFO");
         }
 #endif
 
@@ -1093,6 +1169,14 @@ remote_recv_one(EV_P_ ev_io *w, udp_batch_t *b, int idx)
     if (!keep)
         close(src_fd);
 
+#elif defined(TUNNEL_PKTINFO)
+
+    ssize_t s = tunnel_reply(server_ctx->fd, buf, remote_ctx, remote_src_addr_len);
+    if (s == -1 && !(errno == EAGAIN || errno == EWOULDBLOCK)) {
+        ERROR("[udp] remote_recv_sendto");
+        goto CLEAN_UP;
+    }
+
 #else
 
     int s = sendto(server_ctx->fd, buf->data, buf->len, 0,
@@ -1442,6 +1526,11 @@ server_recv_one(EV_P_ ev_io *w, udp_batch_t *b, int idx)
         ev_io_start(EV_A_ & remote_ctx->io);
         ev_timer_start(EV_A_ & remote_ctx->watcher);
     }
+
+#ifdef TUNNEL_PKTINFO
+    remote_ctx->has_local = tunnel_local_addr(&b->msgs[idx].msg_hdr, &src_addr,
+                                              &remote_ctx->local);
+#endif
 
     if (offset > 0) {
         buf->len -= offset;
