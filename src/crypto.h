@@ -36,14 +36,10 @@
 #include <inttypes.h>
 #endif
 
-/* This branch depends on neither libsodium nor mbedTLS. ChaCha20 is vendored
- * from libsodium under vendor/, MD5 is implemented locally. cipher_kt_t used
- * to be mbedtls_cipher_info_t; only the key and nonce lengths are needed here.
+/* This branch depends on neither libsodium nor mbedTLS: the ciphers come from
+ * the AWS-LC subset under vendor/, MD5 and HKDF-SHA1 are implemented locally.
  */
-typedef struct {
-    unsigned int key_bitlen;
-    unsigned int iv_size;
-} cipher_kt_t;
+struct evp_aead_ctx_st;
 
 #define MAX_KEY_LENGTH 64
 #define MAX_NONCE_LENGTH 32
@@ -86,8 +82,6 @@ typedef struct buffer {
 
 typedef struct {
     int method;
-    int skey;
-    cipher_kt_t *info;
     size_t nonce_len;
     size_t key_len;
     size_t tag_len;
@@ -97,6 +91,7 @@ typedef struct {
 typedef struct {
     uint32_t init;
     uint64_t counter;
+    struct evp_aead_ctx_st *aead;   /* AEAD ciphers only */
     cipher_t *cipher;
     buffer_t *chunk;
     uint8_t salt[MAX_KEY_LENGTH];
@@ -133,5 +128,6 @@ void dump(char *tag, char *text, int len);
 
 extern struct cache *nonce_cache;
 extern const char *supported_stream_ciphers[];
+extern const char *supported_aead_ciphers[];
 
 #endif // _CRYPTO_H

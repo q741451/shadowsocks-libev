@@ -27,23 +27,21 @@
 #include "ppbloom.h"
 #include "stream.h"
 #include "utils.h"
-#include "vendor/sodium_shim.h"
-#include "vendor/sodium/crypto_stream_chacha20.h"
+#include <openssl/chacha.h>
 
 /* ChaCha20 block size; the counter must stay aligned across calls */
-#define SODIUM_BLOCK_SIZE   64
+#define CHACHA20_BLOCK_SIZE 64
 
 /*
  * Spec: http://shadowsocks.org/en/spec/Stream-Ciphers.html
  *
  * Stream ciphers provide only confidentiality. Data integrity and authenticity
- * is not guaranteed. This branch deliberately keeps chacha20 alone, for setups
- * where an outer layer already provides authentication; without one, use the
- * AEAD ciphers from upstream instead.
+ * is not guaranteed. This branch keeps chacha20 alone of them, for setups
+ * where an outer layer already provides authentication; without one, use an
+ * AEAD cipher instead.
  *
- * The other methods (table, rc4, aes-*, bf, camellia, cast5, des, idea, rc2,
- * seed, salsa20, chacha20-ietf) needed mbedTLS and the rest of libsodium and
- * were removed along with those dependencies. See vendor/README.md.
+ * The other stream methods (table, rc4, aes-*, bf, camellia, cast5, des, idea,
+ * rc2, seed, salsa20, chacha20-ietf) are deprecated upstream and not built.
  */
 
 #define CHACHA20 0
@@ -55,20 +53,36 @@ const char *supported_stream_ciphers[STREAM_CIPHER_NUM] = {
 static const int supported_stream_ciphers_nonce_size[STREAM_CIPHER_NUM] = { 8 };
 static const int supported_stream_ciphers_key_size[STREAM_CIPHER_NUM]   = { 32 };
 
-int
-cipher_nonce_size(const cipher_t *cipher)
+/* The original ChaCha20: a 64-bit block counter followed by a 64-bit nonce.
+ * AWS-LC implements the RFC 8439 layout, a 32-bit counter followed by a
+ * 96-bit nonce, so the high half of the counter goes in front of the nonce.
+ * AWS-LC wraps its 32-bit counter to zero, hence the split every 2^32
+ * blocks, where the carry moves into the high half.
+ */
+static void
+chacha20_xor_ic(uint8_t *out, const uint8_t *in, uint64_t len,
+                const uint8_t nonce[8], uint64_t ic, const uint8_t key[32])
 {
-    if (cipher == NULL)
-        return 0;
-    return cipher->info->iv_size;
-}
+    uint8_t n[12];
+    uint32_t hi;
+    uint64_t todo;
 
-int
-cipher_key_size(const cipher_t *cipher)
-{
-    if (cipher == NULL)
-        return 0;
-    return cipher->info->key_bitlen / 8;
+    memcpy(n + 4, nonce, 8);
+    while (len > 0) {
+        hi   = (uint32_t)(ic >> 32);
+        n[0] = (uint8_t)hi;         n[1] = (uint8_t)(hi >> 8);
+        n[2] = (uint8_t)(hi >> 16); n[3] = (uint8_t)(hi >> 24);
+
+        todo = ((UINT64_C(1) << 32) - (uint32_t)ic) * CHACHA20_BLOCK_SIZE;
+        if (todo > len)
+            todo = len;
+        CRYPTO_chacha_20(out, in, (size_t)todo, key, n, (uint32_t)ic);
+
+        out += todo;
+        in  += todo;
+        len -= todo;
+        ic   = (ic | UINT32_MAX) + 1;
+    }
 }
 
 /* chacha20 derives the keystream from (key, nonce, block counter) alone, so
@@ -104,10 +118,10 @@ stream_encrypt_all(buffer_t *plaintext, cipher_t *cipher, size_t capacity)
     ppbloom_add((void *)nonce, nonce_len);
 #endif
 
-    crypto_stream_chacha20_xor_ic((uint8_t *)(ciphertext->data + nonce_len),
-                                  (const uint8_t *)plaintext->data,
-                                  (uint64_t)(plaintext->len),
-                                  (const uint8_t *)nonce, 0, cipher->key);
+    chacha20_xor_ic((uint8_t *)(ciphertext->data + nonce_len),
+                    (const uint8_t *)plaintext->data,
+                    (uint64_t)(plaintext->len),
+                    (const uint8_t *)nonce, 0, cipher->key);
 
     stream_ctx_release(&cipher_ctx);
 
@@ -155,19 +169,19 @@ stream_encrypt(buffer_t *plaintext, cipher_ctx_t *cipher_ctx, size_t capacity)
     /* The keystream must continue where the previous call left off. Pad the
      * head up to a block boundary, encrypt, then drop the padding.
      */
-    int padding = cipher_ctx->counter % SODIUM_BLOCK_SIZE;
+    int padding = cipher_ctx->counter % CHACHA20_BLOCK_SIZE;
     brealloc(ciphertext, nonce_len + (padding + ciphertext->len) * 2, capacity);
     if (padding) {
         brealloc(plaintext, plaintext->len + padding, capacity);
         memmove(plaintext->data + padding, plaintext->data, plaintext->len);
-        sodium_memzero(plaintext->data, padding);
+        memset(plaintext->data, 0, padding);
     }
-    crypto_stream_chacha20_xor_ic((uint8_t *)(ciphertext->data + nonce_len),
-                                  (const uint8_t *)plaintext->data,
-                                  (uint64_t)(plaintext->len + padding),
-                                  (const uint8_t *)cipher_ctx->nonce,
-                                  cipher_ctx->counter / SODIUM_BLOCK_SIZE,
-                                  cipher->key);
+    chacha20_xor_ic((uint8_t *)(ciphertext->data + nonce_len),
+                    (const uint8_t *)plaintext->data,
+                    (uint64_t)(plaintext->len + padding),
+                    (const uint8_t *)cipher_ctx->nonce,
+                    cipher_ctx->counter / CHACHA20_BLOCK_SIZE,
+                    cipher->key);
     cipher_ctx->counter += plaintext->len;
     if (padding) {
         memmove(ciphertext->data + nonce_len,
@@ -210,10 +224,10 @@ stream_decrypt_all(buffer_t *ciphertext, cipher_t *cipher, size_t capacity)
         return CRYPTO_ERROR;
     }
 
-    crypto_stream_chacha20_xor_ic((uint8_t *)plaintext->data,
-                                  (const uint8_t *)(ciphertext->data + nonce_len),
-                                  (uint64_t)(ciphertext->len - nonce_len),
-                                  (const uint8_t *)nonce, 0, cipher->key);
+    chacha20_xor_ic((uint8_t *)plaintext->data,
+                    (const uint8_t *)(ciphertext->data + nonce_len),
+                    (uint64_t)(ciphertext->len - nonce_len),
+                    (const uint8_t *)nonce, 0, cipher->key);
 
     stream_ctx_release(&cipher_ctx);
 
@@ -284,20 +298,20 @@ stream_decrypt(buffer_t *ciphertext, cipher_ctx_t *cipher_ctx, size_t capacity)
     if (ciphertext->len <= 0)
         return CRYPTO_NEED_MORE;
 
-    int padding = cipher_ctx->counter % SODIUM_BLOCK_SIZE;
+    int padding = cipher_ctx->counter % CHACHA20_BLOCK_SIZE;
     brealloc(plaintext, (plaintext->len + padding) * 2, capacity);
 
     if (padding) {
         brealloc(ciphertext, ciphertext->len + padding, capacity);
         memmove(ciphertext->data + padding, ciphertext->data, ciphertext->len);
-        sodium_memzero(ciphertext->data, padding);
+        memset(ciphertext->data, 0, padding);
     }
-    crypto_stream_chacha20_xor_ic((uint8_t *)plaintext->data,
-                                  (const uint8_t *)(ciphertext->data),
-                                  (uint64_t)(ciphertext->len + padding),
-                                  (const uint8_t *)cipher_ctx->nonce,
-                                  cipher_ctx->counter / SODIUM_BLOCK_SIZE,
-                                  cipher->key);
+    chacha20_xor_ic((uint8_t *)plaintext->data,
+                    (const uint8_t *)(ciphertext->data),
+                    (uint64_t)(ciphertext->len + padding),
+                    (const uint8_t *)cipher_ctx->nonce,
+                    cipher_ctx->counter / CHACHA20_BLOCK_SIZE,
+                    cipher->key);
     cipher_ctx->counter += ciphertext->len;
     if (padding)
         memmove(plaintext->data, plaintext->data + padding, plaintext->len);
@@ -326,7 +340,7 @@ stream_decrypt(buffer_t *ciphertext, cipher_ctx_t *cipher_ctx, size_t capacity)
 void
 stream_ctx_init(cipher_t *cipher, cipher_ctx_t *cipher_ctx, int enc)
 {
-    sodium_memzero(cipher_ctx, sizeof(cipher_ctx_t));
+    memset(cipher_ctx, 0, sizeof(cipher_ctx_t));
     cipher_ctx->cipher = cipher;
 
     if (enc)
@@ -344,20 +358,16 @@ stream_key_init(int method, const char *pass, const char *key)
     cipher_t *cipher = (cipher_t *)ss_malloc(sizeof(cipher_t));
     memset(cipher, 0, sizeof(cipher_t));
 
-    cipher_kt_t *cipher_info = (cipher_kt_t *)ss_malloc(sizeof(cipher_kt_t));
-    cipher->info             = cipher_info;
-    cipher->info->key_bitlen = supported_stream_ciphers_key_size[method] * 8;
-    cipher->info->iv_size    = supported_stream_ciphers_nonce_size[method];
-
+    size_t key_len = supported_stream_ciphers_key_size[method];
     if (key != NULL)
-        cipher->key_len = crypto_parse_key(key, cipher->key, cipher_key_size(cipher));
+        cipher->key_len = crypto_parse_key(key, cipher->key, key_len);
     else
-        cipher->key_len = crypto_derive_key(pass, cipher->key, cipher_key_size(cipher));
+        cipher->key_len = crypto_derive_key(pass, cipher->key, key_len);
 
     if (cipher->key_len == 0)
         FATAL("Cannot generate key and NONCE");
 
-    cipher->nonce_len = cipher_nonce_size(cipher);
+    cipher->nonce_len = supported_stream_ciphers_nonce_size[method];
     cipher->method    = method;
 
     return cipher;

@@ -31,20 +31,25 @@
 #include <linux/random.h>
 #endif
 
+#include <errno.h>
 #include <stdint.h>
 
+#include <openssl/crypto.h>
+#include <openssl/rand.h>
+
+#include "aead.h"
 #include "base64.h"
 #include "crypto.h"
 #include "md5.h"
 #include "stream.h"
 #include "utils.h"
 #include "ppbloom.h"
-#include "vendor/sodium_shim.h"
+#include "aws-lc-ss.h"
 
 int
 balloc(buffer_t *ptr, size_t capacity)
 {
-    sodium_memzero(ptr, sizeof(buffer_t));
+    memset(ptr, 0, sizeof(buffer_t));
     ptr->data     = ss_malloc(capacity);
     ptr->capacity = capacity;
     return capacity;
@@ -89,8 +94,11 @@ bprepend(buffer_t *dst, buffer_t *src, size_t capacity)
 int
 rand_bytes(void *output, int len)
 {
-    randombytes_buf(output, (size_t)len);
-    // always return success
+    /* Salts and nonces must never repeat; there is no safe way to go on */
+    if (!RAND_bytes(output, (size_t)len)) {
+        LOGE("getrandom: %s", strerror(errno));
+        FATAL("Failed to read random bytes");
+    }
     return 0;
 }
 
@@ -131,12 +139,15 @@ crypto_init(const char *password, const char *key, const char *method)
 
     entropy_check();
 
-    /* Select the ChaCha20 implementation. The result is logged on purpose:
-     * a missing HAVE_* macro silently falls back to the portable C code
-     * instead of failing the build.
+    /* Detects the CPU features the assembly picks its code paths by. Without
+     * it everything runs, correctly but slowly, as portable C; hence the log
+     * of what was actually selected.
      */
-    ss_chacha20_init();
-    LOGI("chacha20 implementation: %s", ss_chacha20_impl_name());
+    CRYPTO_library_init();
+    const char *impl = ss_crypto_impl();
+    if (impl == NULL)
+        FATAL("CPU feature detection did not run");
+    LOGI("crypto: %s", impl);
 
     // Initialize NONCE bloom filter
 #ifdef MODULE_REMOTE
@@ -170,6 +181,28 @@ crypto_init(const char *password, const char *key, const char *method)
             return crypto;
         }
 
+        for (i = 0; i < AEAD_CIPHER_NUM; i++)
+            if (strcmp(method, supported_aead_ciphers[i]) == 0) {
+                m = i;
+                break;
+            }
+        if (m != -1) {
+            cipher_t *cipher = aead_init(password, key, method);
+            if (cipher == NULL)
+                return NULL;
+            crypto_t *crypto = (crypto_t *)ss_malloc(sizeof(crypto_t));
+            crypto_t tmp     = {
+                .cipher      = cipher,
+                .encrypt_all = &aead_encrypt_all,
+                .decrypt_all = &aead_decrypt_all,
+                .encrypt     = &aead_encrypt,
+                .decrypt     = &aead_decrypt,
+                .ctx_init    = &aead_ctx_init,
+                .ctx_release = &aead_ctx_release,
+            };
+            memcpy(crypto, &tmp, sizeof(crypto_t));
+            return crypto;
+        }
     }
 
     LOGE("invalid cipher name: %s", method);
@@ -190,7 +223,7 @@ crypto_derive_key(const char *pass, uint8_t *key, size_t key_len)
     unsigned int i, j;
 
     if (pass == NULL)
-        return key_len;
+        return 0;
 
     datal = strlen((const char *)pass);
 
@@ -214,12 +247,17 @@ crypto_derive_key(const char *pass, uint8_t *key, size_t key_len)
 int
 crypto_parse_key(const char *base64, uint8_t *key, size_t key_len)
 {
-    size_t base64_len = strlen(base64);
-    int out_len       = BASE64_SIZE(base64_len);
-    uint8_t out[out_len];
+    /* A fixed buffer, not one sized from the input: a long enough key string
+     * would overflow the stack. Only key_len bytes are used, and
+     * base64_decode never writes past the size it is given.
+     */
+    uint8_t out[MAX_KEY_LENGTH];
 
-    out_len = base64_decode(out, base64, out_len);
-    if (out_len > 0 && out_len >= key_len) {
+    if (key_len > sizeof(out))
+        FATAL("Key length exceeds the maximum supported size");
+
+    int out_len = base64_decode(out, base64, (int)key_len);
+    if (out_len > 0 && (size_t)out_len >= key_len) {
         memcpy(key, out, key_len);
 #ifdef SS_DEBUG
         dump("KEY", (char *)key, key_len);
@@ -227,10 +265,9 @@ crypto_parse_key(const char *base64, uint8_t *key, size_t key_len)
         return key_len;
     }
 
-    out_len = BASE64_SIZE(key_len);
-    char out_key[out_len];
+    char out_key[BASE64_SIZE(MAX_KEY_LENGTH)];
     rand_bytes(key, key_len);
-    base64_encode(out_key, out_len, key, key_len);
+    base64_encode(out_key, sizeof(out_key), key, key_len);
     LOGE("Invalid key for your chosen cipher!");
     LOGE("It requires a " SIZE_FMT "-byte key encoded with URL-safe Base64", key_len);
     LOGE("Generating a new random key: %s", out_key);

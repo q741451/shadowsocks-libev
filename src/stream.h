@@ -36,7 +36,7 @@
 #include <inttypes.h>
 #endif
 
-/* Only chacha20 is kept in this branch, see vendor/README.md */
+/* Only chacha20 is kept of the stream ciphers, see stream.c */
 #define STREAM_CIPHER_NUM          1
 
 #include "crypto.h"

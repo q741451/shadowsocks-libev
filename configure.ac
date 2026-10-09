@@ -57,6 +57,7 @@ AM_COND_IF([ENABLE_DOCUMENTATION], [
 dnl Checks for programs.
 AC_PROG_CC
 AM_PROG_CC_C_O
+AM_PROG_AS
 AC_PROG_INSTALL
 AC_PROG_LN_S
 AC_PROG_MAKE_SET
@@ -85,36 +86,45 @@ AC_SUBST([SS_OPT_COLD])
 dnl Checks for TLS
 AX_TLS([:], [:])
 
-dnl Neither libsodium nor mbedTLS is needed: ChaCha20 is vendored under
-dnl src/vendor and MD5 is implemented locally. See src/vendor/README.md.
+dnl Neither libsodium nor mbedTLS is needed: the ciphers come from the AWS-LC
+dnl subset vendored under src/vendor, MD5 and HKDF-SHA1 are implemented locally.
+dnl See src/vendor/README.md.
 ss_CARES
 
-dnl ChaCha20 ships SSSE3 and AVX2 implementations picked at run time by
-dnl src/vendor/runtime.c. They are gated on HAVE_* macros; a missing one is
-dnl not an error, it silently selects the portable C code, which is why the
-dnl startup log reports the implementation in use.
-dnl HAVE__XGETBV is an MSVC builtin, GCC needs HAVE_AVX_ASM instead.
-AC_MSG_CHECKING(whether target CPU has SIMD paths for ChaCha20)
-case $host_cpu in
-  i[[3456]]86|x86_64|amd64)
-    arch_x86=yes
-    dnl Passed with -D rather than AC_DEFINE: the vendored sources come from
-    dnl libsodium and do not include config.h, so definitions made there would
-    dnl never reach them.
-    CHACHA20_SIMD_CFLAGS="-DHAVE_CPUID -DHAVE_AVX_ASM"
-    CHACHA20_SIMD_CFLAGS="$CHACHA20_SIMD_CFLAGS -DHAVE_EMMINTRIN_H -DHAVE_PMMINTRIN_H"
-    CHACHA20_SIMD_CFLAGS="$CHACHA20_SIMD_CFLAGS -DHAVE_TMMINTRIN_H -DHAVE_SMMINTRIN_H"
-    CHACHA20_SIMD_CFLAGS="$CHACHA20_SIMD_CFLAGS -DHAVE_AVXINTRIN_H -DHAVE_AVX2INTRIN_H"
-    AC_MSG_RESULT(yes: SSSE3 and AVX2)
-    ;;
-  *)
-    arch_x86=no
-    CHACHA20_SIMD_CFLAGS=""
-    AC_MSG_RESULT(no: portable C only)
+dnl AWS-LC's assembly, which picks AES-NI, ARMv8 crypto extensions, NEON,
+dnl AVX2 and so on at run time. Only the targets the vendored ELF assembly is
+dnl generated for get it; everything else, MIPS included, is built as
+dnl portable C with OPENSSL_NO_ASM, as AWS-LC itself does there.
+dnl The 32-bit ARM assembly is little endian only. It does not need an ARMv7
+dnl baseline: like OpenSSL's, it assembles its NEON and ARMv8 code for those
+dnl CPUs and only calls it when the CPU reports them.
+AC_MSG_CHECKING([which AWS-LC assembly to build])
+awslc_asm=none
+case $host_os in
+  linux*)
+    case $host_cpu in
+      x86_64) awslc_asm=x86_64 ;;
+      aarch64) awslc_asm=aarch64 ;;
+      arm*)
+        AC_COMPILE_IFELSE([AC_LANG_SOURCE([[
+#if !defined(__ARMEL__)
+#error not little endian
+#endif
+]])], [awslc_asm=arm])
+        ;;
+    esac
     ;;
 esac
-AC_SUBST([CHACHA20_SIMD_CFLAGS])
-AM_CONDITIONAL([ARCH_X86], [test "x$arch_x86" = "xyes"])
+AC_MSG_RESULT([$awslc_asm])
+if test "x$awslc_asm" = "xnone"; then
+  AWSLC_CPPFLAGS="-DOPENSSL_NO_ASM"
+else
+  AWSLC_CPPFLAGS=""
+fi
+AC_SUBST([AWSLC_CPPFLAGS])
+AM_CONDITIONAL([AWSLC_X86_64], [test "x$awslc_asm" = "xx86_64"])
+AM_CONDITIONAL([AWSLC_AARCH64], [test "x$awslc_asm" = "xaarch64"])
+AM_CONDITIONAL([AWSLC_ARM], [test "x$awslc_asm" = "xarm"])
 
 dnl Checks for inet_ntop
 ss_FUNC_INET_NTOP

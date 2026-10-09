@@ -4,8 +4,8 @@
 #   scripts/build-static.sh x86_64-linux-musl
 #   scripts/build-static.sh mipsel-linux-muslsf
 #
-# libsodium and mbedTLS are not needed: ChaCha20 is vendored under src/vendor
-# and MD5 is implemented locally. See src/vendor/README.md.
+# libsodium and mbedTLS are not needed: the ciphers come from the AWS-LC subset
+# under src/vendor. See src/vendor/README.md.
 # The remaining dependencies are pinned by version and checked by sha256.
 set -euo pipefail
 
@@ -90,7 +90,7 @@ mkdir -p "$OBJ/ss" && cd "$OBJ/ss"
 # -all-static is a libtool flag, not a compiler one: putting it in configure's
 # LDFLAGS makes its compiler test fail, so it is passed at make time. -L must
 # be repeated there or it overrides the library path configure recorded.
-SSLD="-no-pie -all-static -Wl,--gc-sections -L$DEPS/lib"
+SSLD="-no-pie -all-static -L$DEPS/lib"
 make -j"$(nproc)" LDFLAGS="$SSLD" >/dev/null
 make install LDFLAGS="$SSLD" >/dev/null
 cd "$ROOT"

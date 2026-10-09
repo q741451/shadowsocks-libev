@@ -4,8 +4,7 @@
  * bloom_init() is the only caller of log() and ceil() in the whole program.
  * Pulling them from libm links in its log/exp lookup tables, which cost more
  * than the bloom filter code itself in a static build. Defining them here
- * keeps the linker from touching libm at all, the same trick as
- * vendor/sodium_shim.c.
+ * keeps the linker from touching libm at all.
  *
  * Accuracy barely matters: the results only size the bloom filter, a value
  * that never leaves the process. They still match musl to within 1e-15.

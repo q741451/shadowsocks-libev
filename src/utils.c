@@ -40,8 +40,6 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
-#include "vendor/sodium_shim.h"
-
 #include "crypto.h"
 #include "utils.h"
 
@@ -311,25 +309,13 @@ usage()
     printf(
         "       -k <password>              Password of your remote server.\n");
     printf(
-        "       -m <encrypt_method>        Encrypt method: rc4-md5, \n");
+        "       -m <encrypt_method>        Encrypt method:\n");
     printf(
         "                                  aes-128-gcm, aes-192-gcm, aes-256-gcm,\n");
     printf(
-        "                                  aes-128-cfb, aes-192-cfb, aes-256-cfb,\n");
-    printf(
-        "                                  aes-128-ctr, aes-192-ctr, aes-256-ctr,\n");
-    printf(
-        "                                  camellia-128-cfb, camellia-192-cfb,\n");
-    printf(
-        "                                  camellia-256-cfb, bf-cfb,\n");
-    printf(
         "                                  chacha20-ietf-poly1305,\n");
-#ifdef FS_HAVE_XCHACHA20IETF
     printf(
-        "                                  xchacha20-ietf-poly1305,\n");
-#endif
-    printf(
-        "                                  salsa20, chacha20 and chacha20-ietf.\n");
+        "                                  xchacha20-ietf-poly1305 and chacha20.\n");
     printf(
         "                                  The default cipher is chacha20-ietf-poly1305.\n");
     printf("\n");

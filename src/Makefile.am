@@ -8,12 +8,16 @@ AM_CFLAGS += -I$(top_srcdir)/libipset/include
 AM_CFLAGS += -I$(top_srcdir)/libcork/include
 endif
 AM_CFLAGS += $(LIBPCRE_CFLAGS)
-AM_CFLAGS += -I$(top_srcdir)/src/vendor
+AM_CFLAGS += -I$(top_srcdir)/src/vendor -I$(top_srcdir)/src/vendor/aws-lc/include
+AM_CFLAGS += $(AWSLC_CPPFLAGS)
 
 SUBDIRS = vendor
 
+# Required, not only for size: see vendor/Makefile.am
+AM_LDFLAGS = -Wl,--gc-sections
+
 SS_COMMON_LIBS = $(INET_NTOP_LIB) $(LIBPCRE_LIBS)
-SS_COMMON_LIBS += $(top_builddir)/src/vendor/libsschacha20.la
+SS_COMMON_LIBS += $(top_builddir)/src/vendor/libssawslc.la
 if !USE_SYSTEM_SHARED_LIB
 SS_COMMON_LIBS += $(top_builddir)/libbloom/libbloom.la \
                   $(top_builddir)/libipset/libipset.la \
@@ -31,11 +35,14 @@ endif
 acl_src = rule.c \
           acl.c
 
-# ChaCha20 is vendored from libsodium under vendor/ and MD5 is implemented
-# locally, so neither libsodium nor mbedTLS is linked. See vendor/README.md.
+# The ciphers come from the AWS-LC subset under vendor/, MD5 and HKDF-SHA1
+# are implemented locally, so neither libsodium nor mbedTLS is linked. See
+# vendor/README.md.
 crypto_src = crypto.c \
+             aead.c \
              stream.c \
              md5.c \
+             hkdf.c \
              libm_shim.c \
              ppbloom.c \
              base64.c
@@ -112,11 +119,11 @@ endif
 lib_LTLIBRARIES = libshadowsocks-libev.la
 libshadowsocks_libev_la_SOURCES = $(ss_local_SOURCES)
 libshadowsocks_libev_la_CFLAGS = $(ss_local_CFLAGS) -DLIB_ONLY
-libshadowsocks_libev_la_LDFLAGS = -version-info $(VERSION_INFO)
+libshadowsocks_libev_la_LDFLAGS = $(AM_LDFLAGS) -version-info $(VERSION_INFO)
 libshadowsocks_libev_la_LIBADD = $(ss_local_LDADD)
 include_HEADERS = shadowsocks.h
 
-noinst_HEADERS = acl.h crypto.h stream.h json.h netutils.h redir.h server.h uthash.h \
+noinst_HEADERS = acl.h crypto.h aead.h stream.h md5.h hkdf.h json.h netutils.h redir.h server.h uthash.h \
                  cache.h local.h plugin.h resolv.h tunnel.h utils.h base64.h ppbloom.h \
                  common.h jconf.h manager.h rule.h socks5.h udprelay.h winsock.h
 EXTRA_DIST = ss-nat

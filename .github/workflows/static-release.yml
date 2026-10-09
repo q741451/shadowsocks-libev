@@ -21,27 +21,43 @@ jobs:
           # which repackages the musl.cc toolchains one tag per triplet. It
           # avoids downloading from musl.cc directly and covers targets the
           # dockcross images do not, such as x86_64-musl and soft-float mips.
+          # tests: one test-static.py run per line; each --path names the
+          # AES code the CPU must get, then the environment forcing it
           - name: x86_64
             tag: x86_64-linux-musl
+            tests: |
+              --path hw --path vpaes 'OPENSSL_ia32cap=~0x1200000200000000:~0x20' --path c 'OPENSSL_ia32cap=~0x1208020200000000:~0x20'
 
           - name: aarch64
             tag: aarch64-linux-musl
+            tests: |
+              --runner 'qemu-aarch64-static -cpu max' --path hw --path vpaes 'OPENSSL_armcap=~0x24'
 
           # armv7 hard-float, current ARM routers and devices
           - name: armv7-hf
             tag: arm-linux-musleabihf
+            tests: |
+              --runner 'qemu-arm-static -cpu max' --path hw
+              --runner 'qemu-arm-static -cpu cortex-a7' --path bsaes
+              --runner 'qemu-arm-static -cpu arm1176' --path c
 
           # armv5 soft-float, older or low-end ARM routers
           - name: armv5-sf
             tag: arm-linux-musleabi
+            tests: |
+              --runner 'qemu-arm-static -cpu arm926' --path c
 
           # mips big-endian soft-float, FPU-less router SoCs
           - name: mips-sf
             tag: mips-linux-muslsf
+            tests: |
+              --runner qemu-mips-static --path c
 
           # mipsel little-endian soft-float, MTK and Ralink SoCs
           - name: mipsel-sf
             tag: mipsel-linux-muslsf
+            tests: |
+              --runner qemu-mipsel-static --path c
 
     steps:
       - name: Checkout
@@ -69,6 +85,26 @@ jobs:
                 curl ca-certificates xz-utils file patch >/dev/null
               ./scripts/build-static.sh ${{ matrix.tag }}
             '
+
+      - name: Test
+        env:
+          TESTS: ${{ matrix.tests }}
+          RUST_VER: 1.25.0
+          RUST_SHA: 8439bf43c324b0fc273e663d0b1f8926fd8f666cbd1e0fd59b35096f0e778e92
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user-static >/dev/null
+          # shadowsocks-rust, the reference the AEAD ciphers are checked against
+          RUST_TAR=shadowsocks-v$RUST_VER.x86_64-unknown-linux-musl.tar.xz
+          curl -fsSL --retry 3 -o "$RUST_TAR" \
+            "https://github.com/shadowsocks/shadowsocks-rust/releases/download/v$RUST_VER/$RUST_TAR"
+          echo "$RUST_SHA  $RUST_TAR" | sha256sum -c -
+          mkdir -p ssrust && tar xJf "$RUST_TAR" -C ssrust
+          printf '%s\n' "$TESTS" | while read -r args; do
+            [ -n "$args" ] || continue
+            eval "python3 scripts/test-static.py dist/${{ matrix.tag }} --rust ssrust $args" || exit 1
+          done
 
       - name: Package
         run: |
