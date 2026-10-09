@@ -91,6 +91,8 @@ jobs:
           TESTS: ${{ matrix.tests }}
           RUST_VER: 1.25.0
           RUST_SHA: 8439bf43c324b0fc273e663d0b1f8926fd8f666cbd1e0fd59b35096f0e778e92
+          AWSLC_VER: 5.11.0
+          AWSLC_SHA: 8cb24c6e6be1fa7ff05075c4560ca8b537a7ef48f9e6f465af4ea455794d74f4
         run: |
           set -e
           sudo apt-get update -qq
@@ -101,9 +103,17 @@ jobs:
             "https://github.com/shadowsocks/shadowsocks-rust/releases/download/v$RUST_VER/$RUST_TAR"
           echo "$RUST_SHA  $RUST_TAR" | sha256sum -c -
           mkdir -p ssrust && tar xJf "$RUST_TAR" -C ssrust
+          # AWS-LC's test vectors, for the known-answer test of src/vendor
+          AWSLC_TAR=aws-lc-$AWSLC_VER.tar.gz
+          curl -fsSL --retry 3 -o "$AWSLC_TAR" \
+            "https://github.com/aws/aws-lc/archive/refs/tags/v$AWSLC_VER.tar.gz"
+          echo "$AWSLC_SHA  $AWSLC_TAR" | sha256sum -c -
+          tar xzf "$AWSLC_TAR" "aws-lc-$AWSLC_VER/crypto/cipher_extra/test"
           printf '%s\n' "$TESTS" | while read -r args; do
             [ -n "$args" ] || continue
-            eval "python3 scripts/test-static.py dist/${{ matrix.tag }} --rust ssrust $args" || exit 1
+            eval "python3 scripts/test-static.py dist/${{ matrix.tag }} --rust ssrust \
+              --kat build/${{ matrix.tag }}/kat \
+              --vectors aws-lc-$AWSLC_VER/crypto/cipher_extra/test $args" || exit 1
           done
 
       - name: Package

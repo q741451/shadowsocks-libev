@@ -37,7 +37,7 @@
 #endif
 
 /* This branch depends on neither libsodium nor mbedTLS: the ciphers come from
- * the AWS-LC subset under vendor/, MD5 and HKDF-SHA1 are implemented locally.
+ * AWS-LC code kept under vendor/, MD5 and HKDF-SHA1 are implemented locally.
  */
 struct evp_aead_ctx_st;
 

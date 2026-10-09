@@ -86,45 +86,10 @@ AC_SUBST([SS_OPT_COLD])
 dnl Checks for TLS
 AX_TLS([:], [:])
 
-dnl Neither libsodium nor mbedTLS is needed: the ciphers come from the AWS-LC
-dnl subset vendored under src/vendor, MD5 and HKDF-SHA1 are implemented locally.
+dnl Neither libsodium nor mbedTLS is needed: the ciphers come from AWS-LC code
+dnl kept under src/vendor, MD5 and HKDF-SHA1 are implemented locally.
 dnl See src/vendor/README.md.
 ss_CARES
-
-dnl AWS-LC's assembly, which picks AES-NI, ARMv8 crypto extensions, NEON,
-dnl AVX2 and so on at run time. Only the targets the vendored ELF assembly is
-dnl generated for get it; everything else, MIPS included, is built as
-dnl portable C with OPENSSL_NO_ASM, as AWS-LC itself does there.
-dnl The 32-bit ARM assembly is little endian only. It does not need an ARMv7
-dnl baseline: like OpenSSL's, it assembles its NEON and ARMv8 code for those
-dnl CPUs and only calls it when the CPU reports them.
-AC_MSG_CHECKING([which AWS-LC assembly to build])
-awslc_asm=none
-case $host_os in
-  linux*)
-    case $host_cpu in
-      x86_64) awslc_asm=x86_64 ;;
-      aarch64) awslc_asm=aarch64 ;;
-      arm*)
-        AC_COMPILE_IFELSE([AC_LANG_SOURCE([[
-#if !defined(__ARMEL__)
-#error not little endian
-#endif
-]])], [awslc_asm=arm])
-        ;;
-    esac
-    ;;
-esac
-AC_MSG_RESULT([$awslc_asm])
-if test "x$awslc_asm" = "xnone"; then
-  AWSLC_CPPFLAGS="-DOPENSSL_NO_ASM"
-else
-  AWSLC_CPPFLAGS=""
-fi
-AC_SUBST([AWSLC_CPPFLAGS])
-AM_CONDITIONAL([AWSLC_X86_64], [test "x$awslc_asm" = "xx86_64"])
-AM_CONDITIONAL([AWSLC_AARCH64], [test "x$awslc_asm" = "xaarch64"])
-AM_CONDITIONAL([AWSLC_ARM], [test "x$awslc_asm" = "xarm"])
 
 dnl Checks for inet_ntop
 ss_FUNC_INET_NTOP

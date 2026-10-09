@@ -1,64 +1,19 @@
 /*
- * aws-lc-glue.c - what the vendored AWS-LC subset needs from the rest of
- * libcrypto, and a report of the implementations it selected
- *
- * The extracted sources call into two services shadowsocks does not need in
- * full: the error queue (callers check return values instead) and the random
- * generator.
+ * aws-lc-glue.c - which implementations the AWS-LC code selected
  */
 
-#define _GNU_SOURCE
-#include <errno.h>
 #include <stdio.h>
-#include <sys/random.h>
 
-#include <openssl/aes.h>
-#include <openssl/err.h>
-#include <openssl/rand.h>
-
-#include "crypto/internal.h"
-#include "crypto/chacha/internal.h"
-#include "crypto/cipher_extra/internal.h"
-#include "crypto/fipsmodule/aes/internal.h"
-#include "crypto/fipsmodule/cpucap/internal.h"
-#include "crypto/fipsmodule/modes/internal.h"
+#include "crypto/aes.h"
+#include "crypto/chacha_internal.h"
+#include "crypto/gcm.h"
 
 #include "aws-lc-ss.h"
 
-/* Set by the CPU detection; cpucap/internal.h declares it for ARM only */
-extern uint8_t OPENSSL_cpucap_initialized;
-
-void
-ERR_put_error(int library, int unused, int reason, const char *file,
-              unsigned line)
-{
-    (void)library;
-    (void)unused;
-    (void)reason;
-    (void)file;
-    (void)line;
-}
-
-int
-RAND_bytes(uint8_t *buf, size_t len)
-{
-    while (len > 0) {
-        ssize_t r = getrandom(buf, len, 0);
-        if (r < 0) {
-            if (errno == EINTR)
-                continue;
-            return 0;
-        }
-        buf += r;
-        len -= (size_t)r;
-    }
-    return 1;
-}
-
 /* Each name is decided by the same predicates, in the same order, as the
- * dispatch code in aes/internal.h, cipher/e_aes.c, modes/gcm.c,
- * chacha/chacha.c and cipher_extra/e_chacha20poly1305.c, so this reports the
- * code that actually runs rather than what the build might allow.
+ * dispatch code in e_aes.c, gcm.c, chacha.c and e_chacha20poly1305.c, so
+ * this reports the code that actually runs rather than what the build might
+ * allow.
  */
 
 static const char *
@@ -69,7 +24,7 @@ aes_impl(void)
         return "hw";
 #endif
 #if defined(BSAES)
-    if (bsaes_capable())
+    if (vpaes_capable())
         return "bsaes";
 #elif defined(VPAES)
     if (vpaes_capable())
@@ -106,7 +61,7 @@ chacha20_impl(void)
     if (ChaCha20_ctr32_neon_capable(len))
         return "neon";
 #endif
-#if defined(CHACHA20_ASM_AVX2) && !defined(MY_ASSEMBLER_IS_TOO_OLD_FOR_AVX)
+#if defined(CHACHA20_ASM_AVX2)
     if (ChaCha20_ctr32_avx2_capable(len))
         return "avx2";
 #endif
@@ -137,14 +92,12 @@ ss_crypto_impl(void)
 {
     static char buf[96];
 
-#if defined(OPENSSL_X86_64) || defined(OPENSSL_ARM) || defined(OPENSSL_AARCH64)
 #if !defined(OPENSSL_NO_ASM)
     /* The assembly reads the capabilities without checking that they were
      * ever detected; with no detection everything silently runs as C.
      */
     if (!OPENSSL_cpucap_initialized)
         return NULL;
-#endif
 #endif
 
     snprintf(buf, sizeof(buf),

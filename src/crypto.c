@@ -34,8 +34,9 @@
 #include <errno.h>
 #include <stdint.h>
 
+#include <sys/random.h>
+
 #include <openssl/crypto.h>
-#include <openssl/rand.h>
 
 #include "aead.h"
 #include "base64.h"
@@ -95,9 +96,18 @@ int
 rand_bytes(void *output, int len)
 {
     /* Salts and nonces must never repeat; there is no safe way to go on */
-    if (!RAND_bytes(output, (size_t)len)) {
-        LOGE("getrandom: %s", strerror(errno));
-        FATAL("Failed to read random bytes");
+    uint8_t *p = output;
+    size_t left = (size_t)len;
+    while (left > 0) {
+        ssize_t r = getrandom(p, left, 0);
+        if (r < 0) {
+            if (errno == EINTR)
+                continue;
+            LOGE("getrandom: %s", strerror(errno));
+            FATAL("Failed to read random bytes");
+        }
+        p    += r;
+        left -= (size_t)r;
     }
     return 0;
 }

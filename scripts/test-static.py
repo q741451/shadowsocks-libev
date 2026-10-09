@@ -2,14 +2,16 @@
 """Test the static binaries in a dist directory, on any architecture.
 
     scripts/test-static.py dist/x86_64-linux-musl --rust /opt/ssrust \\
+        --kat build/x86_64-linux-musl/kat --vectors aws-lc/test \\
         --path hw --path vpaes OPENSSL_ia32cap=~0x1200000200000000:~0x20
 
 Each --path names the AES implementation the startup log must report, then
-the environment that forces that code path. For every path, every method is
-sent through ss-local (TCP) and ss-tunnel (UDP) to an echo server, both
-against this build's ss-server and, with --rust, against shadowsocks-rust in
-both directions. --runner runs the binaries under an emulator, e.g.
-"qemu-aarch64-static -cpu max".
+the environment that forces that code path. For every path, --kat runs the
+crypto code's known-answer test (src/vendor/kat.c) on AWS-LC's test vectors,
+then every method is sent through ss-local (TCP) and ss-tunnel (UDP) to an
+echo server, both against this build's ss-server and, with --rust, against
+shadowsocks-rust in both directions. --runner runs the binaries under an
+emulator, e.g. "qemu-aarch64-static -cpu max".
 """
 
 import argparse
@@ -190,9 +192,13 @@ def main():
     ap.add_argument("bindir")
     ap.add_argument("--runner", default="")
     ap.add_argument("--rust")
+    ap.add_argument("--kat")
+    ap.add_argument("--vectors")
     ap.add_argument("--path", nargs="+", action="append", required=True,
                     metavar=("AES_IMPL", "VAR=VALUE"))
     args = ap.parse_args()
+    if args.kat and not args.vectors:
+        ap.error("--kat needs --vectors")
 
     echo_servers()
     new = libev(args.bindir, args.runner)
@@ -204,6 +210,15 @@ def main():
         env = dict(os.environ)
         env.update(a.split("=", 1) for a in assigns)
         label = " ".join(assigns) or "default"
+
+        if args.kat:
+            cmd = shlex.split(args.runner) + [args.kat, args.vectors]
+            r = subprocess.run(cmd, env=env, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True)
+            ok = r.returncode == 0
+            failed += not ok
+            print("[%s] crypto known answers: %s"
+                  % (label, "ok" if ok else "FAIL\n" + r.stdout))
 
         got = aes_impl(new, env)
         ok = got == expect

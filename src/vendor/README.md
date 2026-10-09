@@ -1,4 +1,4 @@
-# vendor/ — the AEAD and ChaCha20 subset of AWS-LC 5.11.0
+# vendor/ — AES-GCM and ChaCha20-Poly1305 from AWS-LC 5.11.0
 
 All ciphers come from here: AES-128/192/256-GCM, ChaCha20-Poly1305,
 XChaCha20-Poly1305 and the original ChaCha20. MD5 (key derivation) and
@@ -6,8 +6,8 @@ HKDF-SHA1 (AEAD subkeys) are implemented in `src/`.
 
 ## Why AWS-LC
 
-It carries the same OpenSSL/BoringSSL assembly that picks the fastest code at
-run time, and is plain C with versioned releases:
+It carries the OpenSSL/BoringSSL assembly that picks the fastest code at run
+time:
 
 | Target | Chosen at run time |
 |---|---|
@@ -19,42 +19,45 @@ run time, and is plain C with versioned releases:
 libsodium has AES-GCM only as AES-256 and only on AES-NI, mbedTLS does not
 pipeline AES, and Nettle's ARM detection does not work on musl.
 
-AVX-512 is left out: its GCM code alone adds about 700K, and every CPU with
-AVX-512 has AES-NI, which is already faster than the relay.
+## What was taken, and what was cut
 
-## Where the files come from
+`aws-lc/asm/` holds the generated assembly of the release tarball
+(aws-lc-5.11.0.tar.gz, sha256
+8cb24c6e6be1fa7ff05075c4560ca8b537a7ef48f9e6f465af4ea455794d74f4),
+unmodified, by architecture.
 
-`aws-lc/` holds the files listed in `aws-lc.files`, copied unmodified from the
-release tarball by `import-aws-lc.sh`, which checks its sha256:
+The C in `aws-lc/crypto/` and `aws-lc/include/` was cut down from the same
+release to what shadowsocks calls, keeping the code of what remains as it
+was. Cut were:
 
-    aws-lc-5.11.0.tar.gz  8cb24c6e6be1fa7ff05075c4560ca8b537a7ef48f9e6f465af4ea455794d74f4
+- the EVP_CIPHER interface, the TLS and random-nonce AEAD variants, state
+  serialisation, the FIPS service indicator and the error queue;
+- AES decryption, CBC, CFB, OFB, XTS, key wrap and POLYVAL;
+- GCM with nonces other than 12 bytes and tags other than 16 bytes, and the
+  GCM paths for CPUs without a counter-mode AES function (there are none);
+- AVX-512 (its GCM code alone is about 700K, and every CPU with it has
+  AES-NI, already faster than the relay), 32-bit x86, PowerPC, Windows,
+  Apple and the other platforms;
+- `sscanf` in the parsing of `OPENSSL_ia32cap` / `OPENSSL_armcap`, which
+  also took an empty value for a valid one;
+- reading `/proc/cpuinfo` on 32-bit ARM for kernels without `AT_HWCAP2`
+  (older than any OpenWrt release).
 
-The other files here are this project's:
+Each file keeps the copyright lines of the files it came from. AWS-LC is
+Apache-2.0 / ISC licensed, see `aws-lc/LICENSE`; both are compatible with
+GPL-3.
 
-- `aws-lc-bcm.c` includes the AES, GCM, AEAD and CPU capability sources the
-  way AWS-LC's `crypto/fipsmodule/bcm.c` does, in its order, without the rest
-  of the module.
-- `aws-lc-glue.c` replaces the error queue (a no-op; callers check return
-  values), the random generator (`getrandom()`), and reports the code paths
-  selected for the startup log.
+`aws-lc-glue.c` is this project's: it reports the code paths selected, for
+the startup log.
 
-AWS-LC is Apache-2.0 / ISC licensed, see `aws-lc/LICENSE`; both are
-compatible with GPL-3.
+## Testing a change
 
-## Building
-
-`Makefile.am` passes the definitions AWS-LC's own CMake build passes, taken
-from its compile commands, and builds at `SS_OPT_CRYPTO` (`-O3`). configure
-picks the assembly for x86_64, aarch64 and little-endian 32-bit ARM on Linux;
-everything else gets `-DOPENSSL_NO_ASM`. The ARM assembly needs no ARMv7
-baseline: like OpenSSL's, it assembles its NEON and ARMv8 code for those CPUs
-and calls it only when the CPU reports them, so one build serves ARMv5 to
-ARMv8.
-
-Some vendored functions refer to parts of AWS-LC that are not vendored, such
-as `EVP_CIPHER_name()` to the OID table. shadowsocks never calls them, so the
-link relies on `--gc-sections` to drop them; a function that is reachable and
-missing fails the link.
+The output must not change: every AEAD over many lengths, with its tamper
+checks, and the AWS-LC test vectors for the sizes shadowsocks uses, on every
+code path (x86_64 with `OPENSSL_ia32cap` masking AES-NI, AVX2 and SSSE3;
+aarch64 with `OPENSSL_armcap`; ARMv5 to ARMv8 and both MIPS byte orders under
+qemu). `scripts/test-static.py` then checks the binaries against
+shadowsocks-rust.
 
 ## At run time
 
@@ -65,5 +68,5 @@ run, and logs what was selected:
 
     crypto: aes hw, ghash pmull, chacha20 neon, chacha20-poly1305 asm
 
-For testing, AWS-LC's `OPENSSL_ia32cap` and `OPENSSL_armcap` environment
-variables mask CPU features to force the slower paths.
+For testing, `OPENSSL_ia32cap` and `OPENSSL_armcap` mask CPU features to
+force the slower paths.

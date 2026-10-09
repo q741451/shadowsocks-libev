@@ -9,11 +9,9 @@ AM_CFLAGS += -I$(top_srcdir)/libcork/include
 endif
 AM_CFLAGS += $(LIBPCRE_CFLAGS)
 AM_CFLAGS += -I$(top_srcdir)/src/vendor -I$(top_srcdir)/src/vendor/aws-lc/include
-AM_CFLAGS += $(AWSLC_CPPFLAGS)
 
 SUBDIRS = vendor
 
-# Required, not only for size: see vendor/Makefile.am
 AM_LDFLAGS = -Wl,--gc-sections
 
 SS_COMMON_LIBS = $(INET_NTOP_LIB) $(LIBPCRE_LIBS)
@@ -35,7 +33,7 @@ endif
 acl_src = rule.c \
           acl.c
 
-# The ciphers come from the AWS-LC subset under vendor/, MD5 and HKDF-SHA1
+# The ciphers come from AWS-LC code kept under vendor/, MD5 and HKDF-SHA1
 # are implemented locally, so neither libsodium nor mbedTLS is linked. See
 # vendor/README.md.
 crypto_src = crypto.c \

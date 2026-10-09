@@ -4,7 +4,7 @@
 #   scripts/build-static.sh x86_64-linux-musl
 #   scripts/build-static.sh mipsel-linux-muslsf
 #
-# libsodium and mbedTLS are not needed: the ciphers come from the AWS-LC subset
+# libsodium and mbedTLS are not needed: the ciphers come from AWS-LC code kept
 # under src/vendor. See src/vendor/README.md.
 # The remaining dependencies are pinned by version and checked by sha256.
 set -euo pipefail
@@ -103,6 +103,12 @@ for b in ss-local ss-redir ss-tunnel ss-server ss-manager; do
     "$STRIP" "$OUTDIR/$b"
 done
 install -m755 "$OBJ/ss-install/bin/ss-nat" "$OUTDIR/ss-nat" 2>/dev/null || true
+
+# The known-answer test of the crypto code, for scripts/test-static.py; it
+# stays out of the release
+"$CC" $CFLAGS -I"$ROOT/src/vendor/aws-lc/include" -I"$ROOT/src/vendor" \
+    "$ROOT/src/vendor/kat.c" "$OBJ/ss/src/vendor/.libs/libssawslc.a" \
+    -static -no-pie -s -o "$ROOT/build/$HOST/kat"
 
 for f in "$OUTDIR"/*; do
     printf "  %-11s %8s  %s\n" "$(basename "$f")" "$(stat -c%s "$f")" "$(file -b "$f" | cut -c1-60)"
