@@ -315,7 +315,9 @@ usage()
     printf(
         "                                  chacha20-ietf-poly1305,\n");
     printf(
-        "                                  xchacha20-ietf-poly1305 and chacha20.\n");
+        "                                  xchacha20-ietf-poly1305, chacha20\n");
+    printf(
+        "                                  and none (no encryption).\n");
     printf(
         "                                  The default cipher is chacha20-ietf-poly1305.\n");
     printf("\n");

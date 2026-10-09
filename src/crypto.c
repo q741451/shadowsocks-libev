@@ -132,6 +132,41 @@ entropy_check(void)
 #endif
 }
 
+/* "none" sends everything as is, the same as shadowsocks-rust's "none". It is
+ * meant for a server reached through an encrypted tunnel; the password is not
+ * used.
+ */
+static int
+none_all(buffer_t *buf, cipher_t *cipher, size_t capacity)
+{
+    (void)buf;
+    (void)cipher;
+    (void)capacity;
+    return CRYPTO_OK;
+}
+
+static int
+none_stream(buffer_t *buf, cipher_ctx_t *cipher_ctx, size_t capacity)
+{
+    (void)cipher_ctx;
+    (void)capacity;
+    return buf->len > 0 ? CRYPTO_OK : CRYPTO_NEED_MORE;
+}
+
+static void
+none_ctx_init(cipher_t *cipher, cipher_ctx_t *cipher_ctx, int enc)
+{
+    (void)enc;
+    memset(cipher_ctx, 0, sizeof(cipher_ctx_t));
+    cipher_ctx->cipher = cipher;
+}
+
+static void
+none_ctx_release(cipher_ctx_t *cipher_ctx)
+{
+    (void)cipher_ctx;
+}
+
 crypto_t *
 crypto_init(const char *password, const char *key, const char *method)
 {
@@ -155,6 +190,24 @@ crypto_init(const char *password, const char *key, const char *method)
 #else
     ppbloom_init(BF_NUM_ENTRIES_FOR_CLIENT, BF_ERROR_RATE_FOR_CLIENT);
 #endif
+
+    if (method != NULL && strcmp(method, "none") == 0) {
+        LOGI("Method none does not encrypt: only use it through an encrypted tunnel.");
+        cipher_t *cipher = (cipher_t *)ss_malloc(sizeof(cipher_t));
+        memset(cipher, 0, sizeof(cipher_t));
+        crypto_t *crypto = (crypto_t *)ss_malloc(sizeof(crypto_t));
+        crypto_t tmp     = {
+            .cipher      = cipher,
+            .encrypt_all = &none_all,
+            .decrypt_all = &none_all,
+            .encrypt     = &none_stream,
+            .decrypt     = &none_stream,
+            .ctx_init    = &none_ctx_init,
+            .ctx_release = &none_ctx_release,
+        };
+        memcpy(crypto, &tmp, sizeof(crypto_t));
+        return crypto;
+    }
 
     if (method != NULL) {
         for (i = 0; i < STREAM_CIPHER_NUM; i++)

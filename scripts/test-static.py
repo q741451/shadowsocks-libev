@@ -23,9 +23,10 @@ import threading
 import time
 
 METHODS = ["aes-128-gcm", "aes-192-gcm", "aes-256-gcm",
-           "chacha20-ietf-poly1305", "xchacha20-ietf-poly1305", "chacha20"]
+           "chacha20-ietf-poly1305", "xchacha20-ietf-poly1305", "chacha20",
+           "none"]
 # The ones shadowsocks-rust release builds include
-RUST_METHODS = {"aes-128-gcm", "aes-256-gcm", "chacha20-ietf-poly1305"}
+RUST_METHODS = {"aes-128-gcm", "aes-256-gcm", "chacha20-ietf-poly1305", "none"}
 
 HOST = "127.0.0.1"
 ECHO_TCP, ECHO_UDP = 18080, 18053
