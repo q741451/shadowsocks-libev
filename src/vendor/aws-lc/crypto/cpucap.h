@@ -21,6 +21,11 @@ static inline int CRYPTO_is_FXSR_capable(void) {
   return (OPENSSL_ia32cap_P[0] & (1 << 24)) != 0;
 }
 
+// Not a CPUID bit: set by CRYPTO_library_init on Intel CPUs.
+static inline int CRYPTO_is_intel_cpu(void) {
+  return (OPENSSL_ia32cap_P[0] & (1 << 30)) != 0;
+}
+
 static inline int CRYPTO_is_PCLMUL_capable(void) {
   return (OPENSSL_ia32cap_P[1] & (1 << 1)) != 0;
 }
@@ -45,8 +50,20 @@ static inline int CRYPTO_is_AVX_capable(void) {
   return (OPENSSL_ia32cap_P[1] & (1 << 28)) != 0;
 }
 
+static inline int CRYPTO_is_BMI1_capable(void) {
+  return (OPENSSL_ia32cap_P[2] & (1 << 3)) != 0;
+}
+
 static inline int CRYPTO_is_AVX2_capable(void) {
   return (OPENSSL_ia32cap_P[2] & (1 << 5)) != 0;
+}
+
+static inline int CRYPTO_is_BMI2_capable(void) {
+  return (OPENSSL_ia32cap_P[2] & (1 << 8)) != 0;
+}
+
+static inline int CRYPTO_is_SHAEXT_capable(void) {
+  return (OPENSSL_ia32cap_P[2] & (1 << 29)) != 0;
 }
 
 // Silvermont and Goldmont lack XSAVE but have MOVBE; there the 4-way SSSE3
@@ -74,6 +91,10 @@ static inline int CRYPTO_is_ARMv8_AES_capable(void) {
 
 static inline int CRYPTO_is_ARMv8_PMULL_capable(void) {
   return (OPENSSL_armcap_P & ARMV8_PMULL) != 0;
+}
+
+static inline int CRYPTO_is_ARMv8_SHA1_capable(void) {
+  return (OPENSSL_armcap_P & ARMV8_SHA1) != 0;
 }
 
 // The 8-way unrolled AES-GCM needs SHA3's EOR3 and pays off on the wide

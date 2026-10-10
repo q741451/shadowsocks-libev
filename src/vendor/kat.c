@@ -9,7 +9,8 @@
  * the output of every AEAD over lengths 0 to 69000, opening each result again
  * and checking that a tampered one fails, and of ChaCha20 across the 2^32
  * block counter wrap. The hash must be the same on every code path; any
- * change in output shows up there. Exits non-zero on any failure.
+ * change in output shows up there. SHA-1 is checked the same way, against
+ * a value from another implementation. Exits non-zero on any failure.
  */
 
 #include <stdio.h>
@@ -19,10 +20,14 @@
 #include <openssl/aead.h>
 #include <openssl/chacha.h>
 #include <openssl/crypto.h>
+#include <openssl/sha.h>
 
 #include "aws-lc-ss.h"
 
 #define EXPECTED_DIGEST 0xe40ca485u
+/* SHA-1 of lengths 0 to 2100 in various update splits, and of 2 MB, as
+ * Python's hashlib computes it */
+#define EXPECTED_SHA1 0x6ff725dbu
 
 static size_t
 unhex(const char *s, uint8_t *out)
@@ -166,7 +171,7 @@ main(int argc, char **argv)
         { "chacha20_poly1305",  EVP_aead_chacha20_poly1305,  32, 12 },
         { "xchacha20_poly1305", EVP_aead_xchacha20_poly1305, 32, 24 },
     };
-    static uint8_t buf[70000], out[70100], back[70100];
+    static uint8_t buf[1 << 21], out[70100], back[70100];
     int fails = 0, cases = 0, rejected = 0, rt = 0;
     uint32_t h = 2166136261u;
     char path[4096];
@@ -232,7 +237,33 @@ main(int argc, char **argv)
     printf("digest: %08x (expected %08x), round trip and tamper failures: %d\n",
            h, EXPECTED_DIGEST, rt);
 
-    fails += rt + (h != EXPECTED_DIGEST) + (cases == 0);
+    uint32_t hs = 2166136261u;
+    for (size_t len = 0; len <= 2100; len++) {
+        size_t step = len % 7 == 0 ? len + 1 : len % 97 + 1, off = 0;
+        uint8_t d[SHA_DIGEST_LENGTH];
+        SHA_CTX c;
+
+        SHA1_Init(&c);
+        while (off < len) {
+            size_t n = len - off < step ? len - off : step;
+            SHA1_Update(&c, buf + off, n);
+            off += n;
+        }
+        SHA1_Final(d, &c);
+        hs = fnv(d, sizeof(d), hs);
+    }
+    {
+        uint8_t d[SHA_DIGEST_LENGTH];
+        SHA_CTX c;
+
+        SHA1_Init(&c);
+        SHA1_Update(&c, buf, sizeof(buf));
+        SHA1_Final(d, &c);
+        hs = fnv(d, sizeof(d), hs);
+    }
+    printf("sha1: %08x (expected %08x)\n", hs, EXPECTED_SHA1);
+
+    fails += rt + (h != EXPECTED_DIGEST) + (hs != EXPECTED_SHA1) + (cases == 0);
     printf("RESULT: %s\n", fails ? "FAILED" : "ok");
     return fails != 0;
 }

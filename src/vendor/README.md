@@ -1,8 +1,9 @@
-# vendor/ — AES-GCM and ChaCha20-Poly1305 from AWS-LC 5.11.0
+# vendor/ — AES-GCM, ChaCha20-Poly1305 and SHA-1 from AWS-LC 5.11.0
 
 All ciphers come from here: AES-128/192/256-GCM, ChaCha20-Poly1305,
-XChaCha20-Poly1305 and the original ChaCha20. MD5 (key derivation) and
-HKDF-SHA1 (AEAD subkeys) are implemented in `src/`.
+XChaCha20-Poly1305 and the original ChaCha20, and SHA-1 for the HKDF that
+derives the AEAD subkeys. MD5 (key derivation from the password) and the
+HMAC/HKDF on top of SHA-1 are in `src/`.
 
 ## Why AWS-LC
 
@@ -15,6 +16,10 @@ time:
 | aarch64 | ARMv8 AES + PMULL, else NEON; ChaCha20 / Poly1305 NEON |
 | 32-bit ARM | ARMv8 AES + PMULL, else NEON bit-sliced AES; ChaCha20 / Poly1305 NEON; integer assembly and C on ARMv5/v6 |
 | others, MIPS included | portable C, constant time |
+
+SHA-1 likewise uses SHA-NI, AVX2, AVX or SSSE3 on x86_64, the ARMv8 SHA1
+instructions on aarch64 and 32-bit ARM, NEON on older ARM, and portable C
+elsewhere. It matters because every UDP packet derives its own subkey.
 
 libsodium has AES-GCM only as AES-256 and only on AES-NI, mbedTLS does not
 pipeline AES, and Nettle's ARM detection does not work on musl.
@@ -32,6 +37,7 @@ was. Cut were:
 
 - the EVP_CIPHER interface, the TLS and random-nonce AEAD variants, state
   serialisation, the FIPS service indicator and the error queue;
+- every digest but SHA-1, and of SHA-1 everything but init, update and final;
 - AES decryption, CBC, CFB, OFB, XTS, key wrap and POLYVAL;
 - GCM with nonces other than 12 bytes and tags other than 16 bytes, and the
   GCM paths for CPUs without a counter-mode AES function (there are none);
@@ -53,11 +59,11 @@ the startup log.
 ## Testing a change
 
 The output must not change: every AEAD over many lengths, with its tamper
-checks, and the AWS-LC test vectors for the sizes shadowsocks uses, on every
-code path (x86_64 with `OPENSSL_ia32cap` masking AES-NI, AVX2 and SSSE3;
-aarch64 with `OPENSSL_armcap`; ARMv5 to ARMv8 and both MIPS byte orders under
-qemu). `scripts/test-static.py` then checks the binaries against
-shadowsocks-rust.
+checks, the AWS-LC test vectors for the sizes shadowsocks uses, and SHA-1
+over many lengths and update splits (`kat.c`), on every code path: x86_64
+with `OPENSSL_ia32cap` masking SHA-NI, AES-NI, AVX2 and SSSE3, aarch64 with
+`OPENSSL_armcap`, ARMv5 to ARMv8 and both MIPS byte orders under qemu.
+`scripts/test-static.py` then checks the binaries against shadowsocks-rust.
 
 ## At run time
 
@@ -66,7 +72,7 @@ features. Without it the assembly sees no features and runs, correctly but
 slowly, as portable C. `crypto_init()` therefore exits if detection has not
 run, and logs what was selected:
 
-    crypto: aes hw, ghash pmull, chacha20 neon, chacha20-poly1305 asm
+    crypto: aes hw, ghash pmull, chacha20 neon, chacha20-poly1305 asm, sha1 hw
 
 For testing, `OPENSSL_ia32cap` and `OPENSSL_armcap` mask CPU features to
 force the slower paths.

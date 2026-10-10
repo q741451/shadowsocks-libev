@@ -26,7 +26,8 @@ libssawslc_la_SOURCES = aws-lc-glue.c \
                         aws-lc/crypto/poly1305.c \
                         aws-lc/crypto/poly1305_vec.c \
                         aws-lc/crypto/poly1305_arm.c \
-                        aws-lc/crypto/e_chacha20poly1305.c
+                        aws-lc/crypto/e_chacha20poly1305.c \
+                        aws-lc/crypto/sha1.c
 
 # Assembly. Every file is built on every target: each one checks the target
 # itself and is empty elsewhere (see aws-lc/include/openssl/target.h). At run
@@ -39,6 +40,7 @@ libssawslc_la_SOURCES += aws-lc/asm/x86_64/aesni-x86_64.S \
                          aws-lc/asm/x86_64/ghash-ssse3-x86_64.S \
                          aws-lc/asm/x86_64/chacha-x86_64.S \
                          aws-lc/asm/x86_64/chacha20_poly1305_x86_64.S \
+                         aws-lc/asm/x86_64/sha1-x86_64.S \
                          aws-lc/asm/aarch64/aesv8-armx.S \
                          aws-lc/asm/aarch64/aesv8-gcm-armv8.S \
                          aws-lc/asm/aarch64/aesv8-gcm-armv8-unroll8.S \
@@ -47,13 +49,15 @@ libssawslc_la_SOURCES += aws-lc/asm/x86_64/aesni-x86_64.S \
                          aws-lc/asm/aarch64/ghash-neon-armv8.S \
                          aws-lc/asm/aarch64/chacha-armv8.S \
                          aws-lc/asm/aarch64/chacha20_poly1305_armv8.S \
+                         aws-lc/asm/aarch64/sha1-armv8.S \
                          aws-lc/asm/arm/aesv8-armx.S \
                          aws-lc/asm/arm/bsaes-armv7.S \
                          aws-lc/asm/arm/vpaes-armv7.S \
                          aws-lc/asm/arm/ghash-armv4.S \
                          aws-lc/asm/arm/ghashv8-armx.S \
                          aws-lc/asm/arm/chacha-armv4.S \
-                         aws-lc/asm/arm/poly1305_arm_asm.S
+                         aws-lc/asm/arm/poly1305_arm_asm.S \
+                         aws-lc/asm/arm/sha1-armv4-large.S
 
 noinst_HEADERS = aws-lc-ss.h
 EXTRA_DIST = README.md kat.c aws-lc

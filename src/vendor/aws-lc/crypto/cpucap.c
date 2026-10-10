@@ -244,6 +244,7 @@ static void OPENSSL_cpuid_setup(void) {
   static const unsigned long kNEON = 1 << 1;
   static const unsigned long kAES = 1 << 3;
   static const unsigned long kPMULL = 1 << 4;
+  static const unsigned long kSHA1 = 1 << 5;
   static const unsigned long kCPUID = 1 << 11;
   static const unsigned long kSHA3 = 1 << 17;
 
@@ -261,6 +262,9 @@ static void OPENSSL_cpuid_setup(void) {
   }
   if (hwcap & kPMULL) {
     OPENSSL_armcap_P |= ARMV8_PMULL;
+  }
+  if (hwcap & kSHA1) {
+    OPENSSL_armcap_P |= ARMV8_SHA1;
   }
   if (hwcap & kSHA3) {
     OPENSSL_armcap_P |= ARMV8_SHA3;
@@ -294,6 +298,7 @@ uint32_t OPENSSL_armcap_P = 0;
 #define HWCAP_NEON (1 << 12)
 #define HWCAP2_AES (1 << 0)
 #define HWCAP2_PMULL (1 << 1)
+#define HWCAP2_SHA1 (1 << 2)
 
 static void OPENSSL_cpuid_setup(void) {
   unsigned long hwcap = getauxval(AT_HWCAP);
@@ -308,6 +313,9 @@ static void OPENSSL_cpuid_setup(void) {
     }
     if (hwcap2 & HWCAP2_PMULL) {
       OPENSSL_armcap_P |= ARMV8_PMULL;
+    }
+    if (hwcap2 & HWCAP2_SHA1) {
+      OPENSSL_armcap_P |= ARMV8_SHA1;
     }
   }
 

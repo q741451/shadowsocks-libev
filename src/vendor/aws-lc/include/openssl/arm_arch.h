@@ -11,6 +11,7 @@
 // Bits of OPENSSL_armcap_P, the ARM features detected at run time.
 #define ARMV7_NEON (1 << 0)
 #define ARMV8_AES (1 << 2)
+#define ARMV8_SHA1 (1 << 3)
 #define ARMV8_PMULL (1 << 5)
 #define ARMV8_SHA3 (1 << 11)
 #define ARMV8_NEOVERSE_V1 (1 << 12)
