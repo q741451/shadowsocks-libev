@@ -44,8 +44,6 @@
  * rc2, seed, salsa20, chacha20-ietf) are deprecated upstream and not built.
  */
 
-#define CHACHA20 0
-
 const char *supported_stream_ciphers[STREAM_CIPHER_NUM] = {
     "chacha20"
 };
@@ -347,7 +345,7 @@ stream_ctx_init(cipher_t *cipher, cipher_ctx_t *cipher_ctx, int enc)
         rand_bytes(cipher_ctx->nonce, cipher->nonce_len);
 }
 
-cipher_t *
+static cipher_t *
 stream_key_init(int method, const char *pass, const char *key)
 {
     if (method < 0 || method >= STREAM_CIPHER_NUM) {

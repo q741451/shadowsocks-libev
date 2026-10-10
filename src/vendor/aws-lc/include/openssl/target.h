@@ -10,8 +10,6 @@
 
 #if defined(__SIZEOF_POINTER__) && __SIZEOF_POINTER__ == 8
 #define OPENSSL_64_BIT
-#else
-#define OPENSSL_32_BIT
 #endif
 
 #if defined(__x86_64__)

@@ -24,7 +24,6 @@
 #include "config.h"
 #endif
 
-#include <stdio.h>
 #include <assert.h>
 
 #include <openssl/aead.h>
@@ -175,8 +174,6 @@ aead_cipher_decrypt(cipher_ctx_t *cipher_ctx,
     size_t nlen = cipher_ctx->cipher->nonce_len;
     size_t tlen = cipher_ctx->cipher->tag_len;
 
-    if (mlen < tlen)
-        return CRYPTO_ERROR;
     if (!EVP_AEAD_CTX_open(cipher_ctx->aead, p, plen, mlen - tlen,
                            n, nlen, m, mlen, ad, adlen))
         return CRYPTO_ERROR;
@@ -554,7 +551,7 @@ aead_decrypt(buffer_t *ciphertext, cipher_ctx_t *cipher_ctx, size_t capacity)
     return CRYPTO_OK;
 }
 
-cipher_t *
+static cipher_t *
 aead_key_init(int method, const char *pass, const char *key)
 {
     if (method < AES128GCM || method >= AEAD_CIPHER_NUM) {
