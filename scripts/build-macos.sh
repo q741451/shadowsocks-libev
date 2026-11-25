@@ -9,7 +9,8 @@ HOST_ARCH=$(uname -m)
 TARGET="macos-${ARCH}"
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
 
-ARCH_FLAG="-arch ${ARCH}"
+export CC="cc -arch ${ARCH}"
+export CXX="c++ -arch ${ARCH}"
 HOST_ARG=""
 if [ "$ARCH" != "$HOST_ARCH" ]; then
     HOST_ARG="--host=${ARCH}-apple-darwin"
@@ -65,9 +66,9 @@ fetch c-ares-$CARES.tar.gz $CARES_SHA \
   "https://github.com/c-ares/c-ares/releases/download/cares-${CARES//./_}/c-ares-$CARES.tar.gz" \
   "https://sources.openwrt.org/c-ares-$CARES.tar.gz"
 
-CFLAGS="-O2 $ARCH_FLAG" LDFLAGS="$ARCH_FLAG" build_ac libev-$LIBEV.tar.gz libev-$LIBEV
-CFLAGS="-Os $ARCH_FLAG" LDFLAGS="$ARCH_FLAG" build_ac pcre-$PCRE.tar.gz pcre-$PCRE --disable-cpp
-CFLAGS="-Os $ARCH_FLAG" LDFLAGS="$ARCH_FLAG" build_ac c-ares-$CARES.tar.gz c-ares-$CARES
+CFLAGS="-O2" build_ac libev-$LIBEV.tar.gz libev-$LIBEV
+CFLAGS="-Os" build_ac pcre-$PCRE.tar.gz pcre-$PCRE --disable-cpp
+CFLAGS="-Os" build_ac c-ares-$CARES.tar.gz c-ares-$CARES --disable-tests
 
 echo "===== shadowsocks-libev ($ARCH) ====="
 [ -f "$ROOT/configure" ] || (cd "$ROOT" && ./autogen.sh >/dev/null 2>&1)
@@ -75,12 +76,12 @@ mkdir -p "$OBJ/ss" && cd "$OBJ/ss"
 [ -f config.status ] || "$ROOT/configure" $HOST_ARG --prefix="$OBJ/ss-install" \
     --disable-shared --enable-static --disable-documentation \
     --with-pcre="$DEPS" --with-ev="$DEPS" --with-cares="$DEPS" \
-    CFLAGS="-O2 $ARCH_FLAG -I$DEPS/include" \
-    LDFLAGS="$ARCH_FLAG -L$DEPS/lib -Wl,-dead_strip" >/dev/null
+    CFLAGS="-O2 -I$DEPS/include" \
+    LDFLAGS="-L$DEPS/lib -Wl,-dead_strip" >/dev/null
 
 # Override GNU ld's --gc-sections from src/Makefile.am with Apple ld's -dead_strip
-make -j"$NPROC" AM_LDFLAGS="$ARCH_FLAG -Wl,-dead_strip" LDFLAGS="$ARCH_FLAG -L$DEPS/lib -Wl,-dead_strip" >/dev/null
-make install AM_LDFLAGS="$ARCH_FLAG -Wl,-dead_strip" LDFLAGS="$ARCH_FLAG -L$DEPS/lib -Wl,-dead_strip" >/dev/null
+make -j"$NPROC" AM_LDFLAGS="-Wl,-dead_strip" LDFLAGS="-L$DEPS/lib -Wl,-dead_strip" >/dev/null
+make install AM_LDFLAGS="-Wl,-dead_strip" LDFLAGS="-L$DEPS/lib -Wl,-dead_strip" >/dev/null
 
 rm -rf "$DIST" && mkdir -p "$DIST"
 for b in ss-local ss-tunnel ss-server ss-manager; do
@@ -88,7 +89,7 @@ for b in ss-local ss-tunnel ss-server ss-manager; do
     strip "$DIST/$b"
 done
 
-cc -O2 $ARCH_FLAG -I"$ROOT/src/vendor/aws-lc/include" -I"$ROOT/src/vendor" \
+$CC -O2 -I"$ROOT/src/vendor/aws-lc/include" -I"$ROOT/src/vendor" \
     "$ROOT/src/vendor/kat.c" "$OBJ/ss/src/vendor/.libs/libssawslc.a" \
     -Wl,-dead_strip -o "$ROOT/build/$TARGET/kat"
 strip "$ROOT/build/$TARGET/kat"
