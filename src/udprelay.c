@@ -677,18 +677,6 @@ create_server_socket(const char *host, const char *port)
                 LOGI("udp port reuse enabled");
             }
         }
-#ifdef IP_TOS
-        // Set QoS flag
-        int tos   = 46 << 2;
-        int rc = setsockopt(server_sock, IPPROTO_IP, IP_TOS, &tos, sizeof(tos));
-        if (rc < 0 && errno != ENOPROTOOPT) {
-            LOGE("setting ipv4 dscp failed: %d", errno);
-        }
-        rc = setsockopt(server_sock, IPPROTO_IPV6, IPV6_TCLASS, &tos, sizeof(tos));
-        if (rc < 0 && errno != ENOPROTOOPT) {
-            LOGE("setting ipv6 dscp failed: %d", errno);
-        }
-#endif
 
 #ifdef TUNNEL_PKTINFO
         if (rp->ai_family == AF_INET6 &&
@@ -841,22 +829,6 @@ tproxy_socket_new(const struct sockaddr_storage *src_addr,
         close(fd);
         return -1;
     }
-#ifdef IP_TOS
-    {
-        /* Only the option matching this socket's family; setting the other one
-         * always fails with ENOPROTOOPT.
-         */
-        int tos = 46 << 2;
-        int rc;
-
-        if (src_addr->ss_family == AF_INET6)
-            rc = setsockopt(fd, IPPROTO_IPV6, IPV6_TCLASS, &tos, sizeof(tos));
-        else
-            rc = setsockopt(fd, IPPROTO_IP, IP_TOS, &tos, sizeof(tos));
-        if (rc < 0 && errno != ENOPROTOOPT)
-            LOGE("setting dscp failed: %d", errno);
-    }
-#endif
     if (bind(fd, (const struct sockaddr *)dst_addr,
              get_sockaddr_len((struct sockaddr *)dst_addr)) != 0) {
         ERROR("[udp] remote_recv_bind");
@@ -940,18 +912,6 @@ resolv_cb(struct sockaddr *addr, void *data)
 #endif
 #ifdef SO_NOSIGPIPE
                 set_nosigpipe(remotefd);
-#endif
-#ifdef IP_TOS
-                // Set QoS flag
-                int tos   = 46 << 2;
-                int rc = setsockopt(remotefd, IPPROTO_IP, IP_TOS, &tos, sizeof(tos));
-                if (rc < 0 && errno != ENOPROTOOPT) {
-                    LOGE("setting ipv4 dscp failed: %d", errno);
-                }
-                rc = setsockopt(remotefd, IPPROTO_IPV6, IPV6_TCLASS, &tos, sizeof(tos));
-                if (rc < 0 && errno != ENOPROTOOPT) {
-                    LOGE("setting ipv6 dscp failed: %d", errno);
-                }
 #endif
 #ifdef SET_INTERFACE
                 if (query_ctx->server_ctx->iface) {
@@ -1485,18 +1445,6 @@ server_recv_one(EV_P_ ev_io *w, udp_batch_t *b, int idx)
 #ifdef SO_NOSIGPIPE
         set_nosigpipe(remotefd);
 #endif
-#ifdef IP_TOS
-        // Set QoS flag
-        int tos = 46 << 2;
-        int rc = setsockopt(remotefd, IPPROTO_IP, IP_TOS, &tos, sizeof(tos));
-        if (rc < 0 && errno != ENOPROTOOPT) {
-            LOGE("setting ipv4 dscp failed: %d", errno);
-        }
-        rc = setsockopt(remotefd, IPPROTO_IPV6, IPV6_TCLASS, &tos, sizeof(tos));
-        if (rc < 0 && errno != ENOPROTOOPT) {
-            LOGE("setting ipv6 dscp failed: %d", errno);
-        }
-#endif
 #ifdef SET_INTERFACE
         if (server_ctx->iface) {
             if (setinterface(remotefd, server_ctx->iface) == -1)
@@ -1585,18 +1533,6 @@ server_recv_one(EV_P_ ev_io *w, udp_batch_t *b, int idx)
 #endif
 #ifdef SO_NOSIGPIPE
                 set_nosigpipe(remotefd);
-#endif
-#ifdef IP_TOS
-                // Set QoS flag
-                int tos   = 46 << 2;
-                int rc = setsockopt(remotefd, IPPROTO_IP, IP_TOS, &tos, sizeof(tos));
-                if (rc < 0 && errno != ENOPROTOOPT) {
-                    LOGE("setting ipv4 dscp failed: %d", errno);
-                }
-                rc = setsockopt(remotefd, IPPROTO_IPV6, IPV6_TCLASS, &tos, sizeof(tos));
-                if (rc < 0 && errno != ENOPROTOOPT) {
-                    LOGE("setting ipv6 dscp failed: %d", errno);
-                }
 #endif
 #ifdef SET_INTERFACE
                 if (server_ctx->iface) {
