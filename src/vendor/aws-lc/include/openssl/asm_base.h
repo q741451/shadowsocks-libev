@@ -8,9 +8,11 @@
 
 #if defined(__ASSEMBLER__)
 
+#if defined(__ELF__)
 // The stack is not executable.
 .pushsection .note.GNU-stack, "", %progbits
 .popsection
+#endif
 
 // Intel CET: _CET_ENDBR marks indirect branch targets.
 #if defined(__CET__) && defined(OPENSSL_X86_64)

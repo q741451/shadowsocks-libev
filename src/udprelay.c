@@ -20,6 +20,10 @@
  * <http://www.gnu.org/licenses/>.
  */
 
+#if defined(__APPLE__) && !defined(__APPLE_USE_RFC_3542)
+#define __APPLE_USE_RFC_3542
+#endif
+
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <fcntl.h>
@@ -109,6 +113,7 @@
  * but keeping them apart rules out a whole class of aliasing bugs. The buffer
  * is allocated once and reused, never per packet.
  */
+#if defined(__linux__)
 typedef struct {
     struct mmsghdr          msgs[MAX_UDP_BATCH];
     struct iovec            iov[MAX_UDP_BATCH];
@@ -117,6 +122,28 @@ typedef struct {
     char                   *data;      /* MAX_UDP_BATCH * slot_size */
     size_t                  slot_size; /* buf_size when data was allocated */
 } udp_batch_t;
+#elif !defined(__MINGW32__)
+typedef struct {
+    struct {
+        struct msghdr       msg_hdr;
+        unsigned int        msg_len;
+    }                       msgs[1];
+    struct iovec            iov[1];
+    struct sockaddr_storage addrs[1];
+    char                    ctrl[1][64];
+    char                   *data;
+    size_t                  slot_size;
+} udp_batch_t;
+#else
+typedef struct {
+    struct {
+        unsigned int        msg_len;
+    }                       msgs[1];
+    struct sockaddr_storage addrs[1];
+    char                   *data;
+    size_t                  slot_size;
+} udp_batch_t;
+#endif
 
 static udp_batch_t server_batch;
 static udp_batch_t remote_batch;
@@ -319,7 +346,13 @@ tunnel_reply(int fd, const buffer_t *buf, const remote_ctx_t *remote_ctx,
 static int
 udp_batch_recv(int fd, udp_batch_t *b)
 {
-    int i, n;
+    int n;
+#if defined(__linux__)
+    int i;
+    const size_t slots = MAX_UDP_BATCH;
+#else
+    const size_t slots = 1;
+#endif
 
     /* buf_size comes from init_udprelay(), which can run more than once with
      * a different MTU. Reusing a buffer allocated for a smaller buf_size would
@@ -327,10 +360,11 @@ udp_batch_recv(int fd, udp_batch_t *b)
      */
     if (b->data == NULL || b->slot_size != (size_t)buf_size) {
         ss_free(b->data);
-        b->data      = ss_malloc((size_t)MAX_UDP_BATCH * buf_size);
+        b->data      = ss_malloc(slots * (size_t)buf_size);
         b->slot_size = buf_size;
     }
 
+#if defined(__linux__)
     for (i = 0; i < MAX_UDP_BATCH; i++) {
         b->iov[i].iov_base = b->data + (size_t)i * b->slot_size;
         b->iov[i].iov_len  = b->slot_size;
@@ -343,19 +377,36 @@ udp_batch_recv(int fd, udp_batch_t *b)
         b->msgs[i].msg_hdr.msg_controllen = sizeof(b->ctrl[i]);
     }
 
-#ifndef __MINGW32__
     n = recvmmsg(fd, b->msgs, MAX_UDP_BATCH, 0, NULL);
+#elif !defined(__MINGW32__)
+    b->iov[0].iov_base = b->data;
+    b->iov[0].iov_len  = b->slot_size;
+    memset(&b->msgs[0], 0, sizeof(b->msgs[0]));
+    b->msgs[0].msg_hdr.msg_iov        = &b->iov[0];
+    b->msgs[0].msg_hdr.msg_iovlen     = 1;
+    b->msgs[0].msg_hdr.msg_name       = &b->addrs[0];
+    b->msgs[0].msg_hdr.msg_namelen    = sizeof(b->addrs[0]);
+    b->msgs[0].msg_hdr.msg_control    = b->ctrl[0];
+    b->msgs[0].msg_hdr.msg_controllen = sizeof(b->ctrl[0]);
+    {
+        ssize_t r = recvmsg(fd, &b->msgs[0].msg_hdr, 0);
+        if (r < 0) {
+            n = -1;
+        } else {
+            b->msgs[0].msg_len = (unsigned int)r;
+            n = 1;
+        }
+    }
 #else
     /* MinGW has neither recvmmsg nor recvmsg */
     {
         socklen_t al = sizeof(b->addrs[0]);
-        ssize_t   r  = recvfrom(fd, b->iov[0].iov_base, b->iov[0].iov_len, 0,
+        ssize_t   r  = recvfrom(fd, b->data, b->slot_size, 0,
                                 (struct sockaddr *)&b->addrs[0], &al);
         if (r < 0) {
             n = -1;
         } else {
-            b->msgs[0].msg_len             = (unsigned int)r;
-            b->msgs[0].msg_hdr.msg_namelen = al;
+            b->msgs[0].msg_len = (unsigned int)r;
             n = 1;
         }
     }
@@ -997,7 +1048,7 @@ remote_recv_one(EV_P_ ev_io *w, udp_batch_t *b, int idx)
 
     if (buf->len > packet_size) {
         if (verbose) {
-            LOGI("[udp] remote_recv fragmentation, MTU at least be: " SSIZE_FMT,
+            LOGI("[udp] remote_recv fragmentation, MTU at least be: " SIZE_FMT,
                  buf->len + PACKET_HEADER_SIZE);
         }
     }
@@ -1072,7 +1123,7 @@ remote_recv_one(EV_P_ ev_io *w, udp_batch_t *b, int idx)
 
     if (buf->len > packet_size) {
         if (verbose) {
-            LOGI("[udp] remote_recv_sendto fragmentation, MTU at least be: " SSIZE_FMT, buf->len + PACKET_HEADER_SIZE);
+            LOGI("[udp] remote_recv_sendto fragmentation, MTU at least be: " SIZE_FMT, buf->len + PACKET_HEADER_SIZE);
         }
     }
 
@@ -1201,7 +1252,7 @@ server_recv_one(EV_P_ ev_io *w, udp_batch_t *b, int idx)
 
     if (buf->len > packet_size) {
         if (verbose) {
-            LOGI("[udp] UDP server_recv fragmentation, MTU at least be: " SSIZE_FMT,
+            LOGI("[udp] UDP server_recv fragmentation, MTU at least be: " SIZE_FMT,
                  buf->len + PACKET_HEADER_SIZE);
         }
     }
@@ -1494,7 +1545,7 @@ server_recv_one(EV_P_ ev_io *w, udp_batch_t *b, int idx)
 
     if (buf->len > packet_size) {
         if (verbose) {
-            LOGI("[udp] server_recv_sendto fragmentation, MTU at least be: " SSIZE_FMT, buf->len + PACKET_HEADER_SIZE);
+            LOGI("[udp] server_recv_sendto fragmentation, MTU at least be: " SIZE_FMT, buf->len + PACKET_HEADER_SIZE);
         }
     }
 

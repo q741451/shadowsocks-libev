@@ -8,6 +8,11 @@ on:
   pull_request:
     branches: [ slim-static ]
   workflow_dispatch:
+    inputs:
+      smoke:
+        description: Also run desktop smoke tests on Windows and macOS runners
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -137,17 +142,184 @@ jobs:
           path: release/shadowsocks-libev-${{ matrix.name }}.tar.gz
           if-no-files-found: error
 
+  build-windows:
+    name: Build (windows-${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    # Pin Ubuntu 20.04 (mingw-w64 7.0.0) for smaller binaries and XP compatibility.
+    container: ubuntu:20.04
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [ x86_64, i686 ]
+    steps:
+      - name: Install toolchain
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            git ca-certificates curl file zip make autoconf automake libtool \
+            pkg-config mingw-w64 >/dev/null
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build Windows (${{ matrix.arch }}) + XP-safe import check
+        run: bash scripts/build-windows.sh ${{ matrix.arch }}-w64-mingw32
+
+      - name: Package
+        run: |
+          set -e
+          OUT=shadowsocks-libev-windows-${{ matrix.arch }}
+          mkdir -p "release/$OUT"
+          cp dist/${{ matrix.arch }}-w64-mingw32/*.exe "release/$OUT/"
+          cp LICENSE "release/$OUT/" 2>/dev/null || true
+          (cd release && zip -rq "$OUT.zip" "$OUT")
+          rm -rf "release/$OUT"
+          ls -l release/
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadowsocks-libev-windows-${{ matrix.arch }}
+          path: release/shadowsocks-libev-windows-${{ matrix.arch }}.zip
+          if-no-files-found: error
+
+      - name: Upload kat for smoke test
+        if: ${{ inputs.smoke }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: kat-windows-${{ matrix.arch }}
+          path: build/${{ matrix.arch }}-w64-mingw32/kat.exe
+          if-no-files-found: error
+
+  smoke-windows:
+    name: Smoke Test (windows-latest, ${{ matrix.arch }})
+    needs: build-windows
+    if: ${{ inputs.smoke }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [ x86_64, i686 ]
+    env:
+      RUST_VER: 1.25.0
+      AWSLC_VER: 5.11.0
+    steps:
+      - name: Checkout test script
+        uses: actions/checkout@v4
+
+      - name: Download release & kat artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: shadowsocks-libev-windows-${{ matrix.arch }}
+          path: pkg
+
+      - name: Download kat.exe
+        uses: actions/download-artifact@v4
+        with:
+          name: kat-windows-${{ matrix.arch }}
+          path: kat
+
+      - name: Fetch shadowsocks-rust server & AWS-LC vectors
+        shell: pwsh
+        run: |
+          Expand-Archive -Path "pkg/shadowsocks-libev-windows-${{ matrix.arch }}.zip" -DestinationPath bin -Force
+          $rustZip = "shadowsocks-v$env:RUST_VER.x86_64-pc-windows-msvc.zip"
+          Invoke-WebRequest -Uri "https://github.com/shadowsocks/shadowsocks-rust/releases/download/v$env:RUST_VER/$rustZip" -OutFile $rustZip
+          Expand-Archive -Path $rustZip -DestinationPath ssrust -Force
+
+          $awslcTar = "aws-lc-$env:AWSLC_VER.tar.gz"
+          Invoke-WebRequest -Uri "https://github.com/aws/aws-lc/archive/refs/tags/v$env:AWSLC_VER.tar.gz" -OutFile $awslcTar
+          tar -xzf $awslcTar "aws-lc-$env:AWSLC_VER/crypto/cipher_extra/test"
+
+      - name: Run Windows smoke test (${{ matrix.arch }})
+        shell: pwsh
+        run: |
+          $bindir = "bin/shadowsocks-libev-windows-${{ matrix.arch }}"
+          python scripts/test-desktop.py $bindir `
+            --server "$bindir/ss-server.exe" --server-kind libev `
+            --kat kat/kat.exe `
+            --vectors "aws-lc-$env:AWSLC_VER/crypto/cipher_extra/test"
+          python scripts/test-desktop.py $bindir `
+            --server ssrust/ssserver.exe --server-kind rust `
+            --kat kat/kat.exe `
+            --vectors "aws-lc-$env:AWSLC_VER/crypto/cipher_extra/test"
+
+  build-macos:
+    name: Build (macos-arm64 + macos-x86_64)
+    runs-on: macos-latest
+    env:
+      AWSLC_VER: 5.11.0
+      AWSLC_SHA: 8cb24c6e6be1fa7ff05075c4560ca8b537a7ef48f9e6f465af4ea455794d74f4
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build tools
+        run: brew install autoconf automake libtool
+
+      - name: Build macOS arm64 & x86_64
+        run: |
+          bash scripts/build-macos.sh arm64
+          bash scripts/build-macos.sh x86_64
+
+      - name: Run macOS arm64 smoke test
+        if: ${{ inputs.smoke }}
+        run: |
+          set -e
+          AWSLC_TAR="aws-lc-$AWSLC_VER.tar.gz"
+          curl -fsSL --retry 3 -o "$AWSLC_TAR" \
+            "https://github.com/aws/aws-lc/archive/refs/tags/v$AWSLC_VER.tar.gz"
+          echo "$AWSLC_SHA  $AWSLC_TAR" | shasum -a 256 -c -
+          tar -xzf "$AWSLC_TAR" "aws-lc-$AWSLC_VER/crypto/cipher_extra/test"
+          python3 scripts/test-desktop.py dist/macos-arm64 \
+            --server dist/macos-arm64/ss-server --server-kind libev \
+            --kat build/macos-arm64/kat \
+            --vectors "aws-lc-$AWSLC_VER/crypto/cipher_extra/test"
+
+      - name: Package
+        run: |
+          set -e
+          for arch in arm64 x86_64; do
+            OUT="shadowsocks-libev-macos-${arch}"
+            mkdir -p "release/$OUT"
+            cp dist/macos-${arch}/* "release/$OUT/"
+            cp LICENSE "release/$OUT/" 2>/dev/null || true
+            tar -C release -czf "release/$OUT.tar.gz" "$OUT"
+            rm -rf "release/$OUT"
+          done
+          ls -l release/
+
+      - name: Upload macOS arm64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadowsocks-libev-macos-arm64
+          path: release/shadowsocks-libev-macos-arm64.tar.gz
+          if-no-files-found: error
+
+      - name: Upload macOS x86_64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadowsocks-libev-macos-x86_64
+          path: release/shadowsocks-libev-macos-x86_64.tar.gz
+          if-no-files-found: error
+
   release:
     name: Create Release
-    needs: build
+    needs: [build, build-windows, build-macos]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Download all artifacts
+      - name: Download all release artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: shadowsocks-libev-*
           path: artifacts
 
       - name: Flatten artifacts

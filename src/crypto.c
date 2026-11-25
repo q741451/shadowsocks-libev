@@ -34,7 +34,14 @@
 #include <errno.h>
 #include <stdint.h>
 
+#if defined(__MINGW32__)
+#include <windows.h>
+#include <wincrypt.h>
+#elif defined(__APPLE__)
+#include <stdlib.h>
+#else
 #include <sys/random.h>
+#endif
 
 #include <openssl/crypto.h>
 
@@ -96,6 +103,24 @@ int
 rand_bytes(void *output, int len)
 {
     /* Salts and nonces must never repeat; there is no safe way to go on */
+#if defined(__MINGW32__)
+    static HCRYPTPROV prov = 0;
+    if (len <= 0)
+        return 0;
+    if (prov == 0) {
+        if (!CryptAcquireContextA(&prov, NULL, NULL, PROV_RSA_FULL,
+                                  CRYPT_VERIFYCONTEXT | CRYPT_SILENT)) {
+            FATAL("Failed to acquire cryptographic context");
+        }
+    }
+    if (!CryptGenRandom(prov, (DWORD)len, (BYTE *)output)) {
+        FATAL("Failed to read random bytes");
+    }
+    return 0;
+#elif defined(__APPLE__)
+    arc4random_buf(output, (size_t)len);
+    return 0;
+#else
     uint8_t *p = output;
     size_t left = (size_t)len;
     while (left > 0) {
@@ -110,6 +135,7 @@ rand_bytes(void *output, int len)
         left -= (size_t)r;
     }
     return 0;
+#endif
 }
 
 unsigned char *

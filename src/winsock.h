@@ -90,7 +90,16 @@
 
 // Override MinGW functions
 #define setsockopt(a, b, c, d, e) setsockopt(a, b, c, (const char *)(d), e)
-#define inet_ntop(a, b, c, d) inet_ntop(a, (void *)(b), c, d)
+#ifdef inet_ntop
+#undef inet_ntop
+#endif
+#define inet_ntop(af, src, dst, size) ss_inet_ntop(af, src, dst, size)
+#ifdef inet_pton
+#undef inet_pton
+#endif
+#define inet_pton(af, src, dst) ss_inet_pton(af, src, dst)
+const char *ss_inet_ntop(int af, const void *src, char *dst, socklen_t size);
+int ss_inet_pton(int af, const char *src, void *dst);
 
 // Override Windows built-in functions
 #ifdef ERROR

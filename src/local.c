@@ -190,6 +190,16 @@ create_and_bind(const char *addr, const char *port)
         }
 
         int opt = 1;
+#ifdef IPV6_V6ONLY
+        /* Allow dual-stack when binding the IPv6 wildcard ("::"), matching
+         * Linux's default on Windows and macOS where IPV6_V6ONLY defaults to 1.
+         */
+        if (rp->ai_family == AF_INET6 &&
+            IN6_IS_ADDR_UNSPECIFIED(&((struct sockaddr_in6 *)rp->ai_addr)->sin6_addr)) {
+            int v6only = 0;
+            setsockopt(listen_sock, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
+        }
+#endif
         setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 #ifdef SO_NOSIGPIPE
         setsockopt(listen_sock, SOL_SOCKET, SO_NOSIGPIPE, &opt, sizeof(opt));
