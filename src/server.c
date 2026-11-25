@@ -1973,6 +1973,10 @@ main(int argc, char **argv)
 
     // initialize listen context
     listen_ctx_t listen_ctx_list[server_num];
+    memset(listen_ctx_list, 0, sizeof(listen_ctx_list));
+    for (int i = 0; i < server_num; i++) {
+        listen_ctx_list[i].fd = -1;
+    }
 
     // bind to each interface
     if (mode != UDP_ONLY) {
@@ -1998,6 +2002,7 @@ main(int argc, char **argv)
             }
             if (listen(listenfd, SSMAXCONN) == -1) {
                 ERROR("listen()");
+                close(listenfd);
                 continue;
             }
             setfastopen(listenfd);
@@ -2092,7 +2097,7 @@ main(int argc, char **argv)
 
     for (int i = 0; i < server_num; i++) {
         listen_ctx_t *listen_ctx = &listen_ctx_list[i];
-        if (mode != UDP_ONLY) {
+        if (mode != UDP_ONLY && listen_ctx->fd != -1) {
             ev_io_stop(loop, &listen_ctx->io);
             close(listen_ctx->fd);
         }
