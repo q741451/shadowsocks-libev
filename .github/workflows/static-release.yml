@@ -38,33 +38,33 @@ jobs:
           - name: aarch64
             tag: aarch64-linux-musl
             tests: |
-              --runner 'qemu-aarch64-static -cpu max' --path hw --path vpaes 'OPENSSL_armcap=~0x2c'
+              --runner 'qemu-aarch64 -cpu max' --path hw --path vpaes 'OPENSSL_armcap=~0x2c'
 
           # armv7 hard-float, current ARM routers and devices
           - name: armv7-hf
             tag: arm-linux-musleabihf
             tests: |
-              --runner 'qemu-arm-static -cpu max' --path hw
-              --runner 'qemu-arm-static -cpu cortex-a7' --path bsaes
-              --runner 'qemu-arm-static -cpu arm1176' --path c
+              --runner 'qemu-arm -cpu max' --path hw
+              --runner 'qemu-arm -cpu cortex-a7' --path bsaes
+              --runner 'qemu-arm -cpu arm1176' --path c
 
           # armv5 soft-float, older or low-end ARM routers
           - name: armv5-sf
             tag: arm-linux-musleabi
             tests: |
-              --runner 'qemu-arm-static -cpu arm926' --path c
+              --runner 'qemu-arm -cpu arm926' --path c
 
           # mips big-endian soft-float, FPU-less router SoCs
           - name: mips-sf
             tag: mips-linux-muslsf
             tests: |
-              --runner qemu-mips-static --path c
+              --runner qemu-mips --path c
 
           # mipsel little-endian soft-float, MTK and Ralink SoCs
           - name: mipsel-sf
             tag: mipsel-linux-muslsf
             tests: |
-              --runner qemu-mipsel-static --path c
+              --runner qemu-mipsel --path c
 
     steps:
       - name: Checkout
@@ -96,32 +96,41 @@ jobs:
       - name: Test
         env:
           TESTS: ${{ matrix.tests }}
+          TAG: ${{ matrix.tag }}
           RUST_VER: 1.25.0
           RUST_SHA: 8439bf43c324b0fc273e663d0b1f8926fd8f666cbd1e0fd59b35096f0e778e92
           AWSLC_VER: 5.11.0
           AWSLC_SHA: 8cb24c6e6be1fa7ff05075c4560ca8b537a7ef48f9e6f465af4ea455794d74f4
         run: |
           set -e
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-user-static >/dev/null
-          # shadowsocks-rust, the reference the AEAD ciphers are checked against
-          RUST_TAR=shadowsocks-v$RUST_VER.x86_64-unknown-linux-musl.tar.xz
-          curl -fsSL --retry 3 -o "$RUST_TAR" \
-            "https://github.com/shadowsocks/shadowsocks-rust/releases/download/v$RUST_VER/$RUST_TAR"
-          echo "$RUST_SHA  $RUST_TAR" | sha256sum -c -
-          mkdir -p ssrust && tar xJf "$RUST_TAR" -C ssrust
-          # AWS-LC's test vectors, for the known-answer test of src/vendor
-          AWSLC_TAR=aws-lc-$AWSLC_VER.tar.gz
-          curl -fsSL --retry 3 -o "$AWSLC_TAR" \
-            "https://github.com/aws/aws-lc/archive/refs/tags/v$AWSLC_VER.tar.gz"
-          echo "$AWSLC_SHA  $AWSLC_TAR" | sha256sum -c -
-          tar xzf "$AWSLC_TAR" "aws-lc-$AWSLC_VER/crypto/cipher_extra/test"
-          printf '%s\n' "$TESTS" | while read -r args; do
-            [ -n "$args" ] || continue
-            eval "python3 scripts/test-static.py dist/${{ matrix.tag }} --rust ssrust \
-              --kat build/${{ matrix.tag }}/kat \
-              --vectors aws-lc-$AWSLC_VER/crypto/cipher_extra/test $args" || exit 1
-          done
+          docker run --rm \
+            -v "${{ github.workspace }}":/work \
+            -w /work \
+            -e TESTS -e TAG -e RUST_VER -e RUST_SHA -e AWSLC_VER -e AWSLC_SHA \
+            ubuntu:24.04 \
+            bash -c '
+              set -e
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y -qq --no-install-recommends \
+                qemu-user python3 curl ca-certificates xz-utils >/dev/null
+              RUST_TAR=shadowsocks-v$RUST_VER.x86_64-unknown-linux-musl.tar.xz
+              curl -fsSL --retry 3 -o "$RUST_TAR" \
+                "https://github.com/shadowsocks/shadowsocks-rust/releases/download/v$RUST_VER/$RUST_TAR"
+              echo "$RUST_SHA  $RUST_TAR" | sha256sum -c -
+              mkdir -p ssrust && tar xJf "$RUST_TAR" -C ssrust
+              AWSLC_TAR=aws-lc-$AWSLC_VER.tar.gz
+              curl -fsSL --retry 3 -o "$AWSLC_TAR" \
+                "https://github.com/aws/aws-lc/archive/refs/tags/v$AWSLC_VER.tar.gz"
+              echo "$AWSLC_SHA  $AWSLC_TAR" | sha256sum -c -
+              tar xzf "$AWSLC_TAR" "aws-lc-$AWSLC_VER/crypto/cipher_extra/test"
+              printf "%s\n" "$TESTS" | while read -r args; do
+                [ -n "$args" ] || continue
+                eval "python3 scripts/test-static.py dist/$TAG --rust ssrust \
+                  --kat build/$TAG/kat \
+                  --vectors aws-lc-$AWSLC_VER/crypto/cipher_extra/test $args" || exit 1
+              done
+            '
 
       - name: Package
         run: |
